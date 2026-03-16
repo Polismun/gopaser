@@ -1,19 +1,68 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
+	"time"
 )
+
+// verifyURL is set once at startup; empty only if DEV_MODE=true
+var verifyURL string
+
+// --- Rate limiter (sliding window, 10 req/min per IP) ---
+
+type rateLimiter struct {
+	mu       sync.Mutex
+	requests map[string][]time.Time
+}
+
+var limiter = &rateLimiter{requests: make(map[string][]time.Time)}
+
+const (
+	rateWindow   = time.Minute
+	rateMax      = 10
+	maxBodyBytes = 1 << 30 // 1 GB
+)
+
+func (rl *rateLimiter) allow(key string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-rateWindow)
+
+	// Remove expired entries
+	valid := rl.requests[key][:0]
+	for _, t := range rl.requests[key] {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) >= rateMax {
+		rl.requests[key] = valid
+		return false
+	}
+
+	rl.requests[key] = append(valid, now)
+	return true
+}
 
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
+	}
+
+	// Fix 1: VERIFY_URL mandatory in production
+	verifyURL = os.Getenv("VERIFY_URL")
+	if verifyURL == "" && os.Getenv("DEV_MODE") != "true" {
+		log.Fatal("VERIFY_URL is required (set DEV_MODE=true to skip)")
 	}
 
 	http.HandleFunc("/parse", handleParse)
@@ -32,43 +81,50 @@ func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 }
 
-// verifyAuth forwards the Authorization header to Vercel for validation.
-// If VERIFY_URL is not set (dev local), auth is skipped.
 func verifyAuth(authHeader string) (int, error) {
-	verifyURL := os.Getenv("VERIFY_URL")
 	if verifyURL == "" {
-		return http.StatusOK, nil
+		return http.StatusOK, nil // DEV_MODE only
 	}
 
 	req, err := http.NewRequest("POST", verifyURL+"/api/verify-upload", nil)
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}
-	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
-	}
+	req.Header.Set("Authorization", authHeader)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return http.StatusBadGateway, fmt.Errorf("auth service unreachable: %w", err)
+		return http.StatusBadGateway, fmt.Errorf("auth service unreachable")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var body struct {
-			Error string `json:"error"`
+		// Fix 5: Don't leak internal error details to client
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			return resp.StatusCode, fmt.Errorf("unauthorized")
+		case http.StatusForbidden:
+			return resp.StatusCode, fmt.Errorf("forbidden")
+		case http.StatusTooManyRequests:
+			return resp.StatusCode, fmt.Errorf("rate limited")
+		default:
+			return resp.StatusCode, fmt.Errorf("auth check failed")
 		}
-		json.NewDecoder(resp.Body).Decode(&body)
-		return resp.StatusCode, fmt.Errorf("%s", body.Error)
 	}
 
 	return http.StatusOK, nil
 }
 
+func clientIP(r *http.Request) string {
+	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+		return ip
+	}
+	return r.RemoteAddr
+}
+
 func handleParse(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 
-	// Handle CORS preflight
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -79,8 +135,20 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify auth via Vercel (skipped if VERIFY_URL not set)
-	status, err := verifyAuth(r.Header.Get("Authorization"))
+	// Fix 4: Rate limit by IP
+	if !limiter.allow(clientIP(r)) {
+		http.Error(w, "Rate limited", http.StatusTooManyRequests)
+		return
+	}
+
+	// Fix 2: Authorization header mandatory in production
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" && verifyURL != "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	status, err := verifyAuth(authHeader)
 	if status != http.StatusOK {
 		errMsg := "Unauthorized"
 		if err != nil {
@@ -90,38 +158,40 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fix 3: Limit body size to 1 GB
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+
 	// Buffer body to a temp file (parser needs seekable input)
 	tmpFile, err := os.CreateTemp("", "demo-*.dem")
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to create temp file: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 	defer os.Remove(tmpFile.Name())
 	defer tmpFile.Close()
 
 	if _, err := io.Copy(tmpFile, r.Body); err != nil {
-		http.Error(w, fmt.Sprintf("failed to buffer demo: %v", err), http.StatusInternalServerError)
+		http.Error(w, "File too large or upload failed", http.StatusRequestEntityTooLarge)
 		return
 	}
 	r.Body.Close()
 
-	// Spawn the parser binary with the temp file path
 	cmd := exec.Command("./parser", tmpFile.Name())
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("stdout pipe error: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("stderr pipe error: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 
 	if err := cmd.Start(); err != nil {
-		http.Error(w, fmt.Sprintf("failed to start parser: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 
