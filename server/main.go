@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -28,13 +29,43 @@ func main() {
 func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+}
+
+func verifyAuth(authHeader string) (int, error) {
+	verifyURL := os.Getenv("VERIFY_URL")
+	if verifyURL == "" {
+		return http.StatusOK, nil // Skip auth in dev
+	}
+
+	req, err := http.NewRequest("POST", verifyURL+"/api/verify-upload", nil)
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return http.StatusBadGateway, fmt.Errorf("auth service unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var body struct {
+			Error string `json:"error"`
+		}
+		json.NewDecoder(resp.Body).Decode(&body)
+		return resp.StatusCode, fmt.Errorf("%s", body.Error)
+	}
+
+	return http.StatusOK, nil
 }
 
 func handleParse(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 
-	// Handle CORS preflight
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -42,6 +73,17 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Verify auth via Vercel
+	status, err := verifyAuth(r.Header.Get("Authorization"))
+	if status != http.StatusOK {
+		errMsg := "Unauthorized"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		http.Error(w, errMsg, status)
 		return
 	}
 
