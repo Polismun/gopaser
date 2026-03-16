@@ -10,11 +10,11 @@ RUN go mod download
 COPY *.go ./
 
 # Build the parser binary
-RUN go build -o parser .
+RUN CGO_ENABLED=0  go build -o parser .
 
 # Build the HTTP server
 COPY server/ ./server/
-RUN cd server && go build -o /app/server .
+RUN cd server && CGO_ENABLED=0 go build -o /app/server .
 
 # --- Runtime ---
 FROM alpine:3.21
