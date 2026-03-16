@@ -32,10 +32,12 @@ func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 }
 
+// verifyAuth forwards the Authorization header to Vercel for validation.
+// If VERIFY_URL is not set (dev local), auth is skipped.
 func verifyAuth(authHeader string) (int, error) {
 	verifyURL := os.Getenv("VERIFY_URL")
 	if verifyURL == "" {
-		return http.StatusOK, nil // Skip auth in dev
+		return http.StatusOK, nil
 	}
 
 	req, err := http.NewRequest("POST", verifyURL+"/api/verify-upload", nil)
@@ -66,6 +68,7 @@ func verifyAuth(authHeader string) (int, error) {
 func handleParse(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 
+	// Handle CORS preflight
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -76,7 +79,7 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify auth via Vercel
+	// Verify auth via Vercel (skipped if VERIFY_URL not set)
 	status, err := verifyAuth(r.Header.Get("Authorization"))
 	if status != http.StatusOK {
 		errMsg := "Unauthorized"
@@ -87,6 +90,7 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Spawn the parser binary, pipe request body to stdin
 	cmd := exec.Command("./parser")
 	cmd.Stdin = r.Body
 	defer r.Body.Close()
