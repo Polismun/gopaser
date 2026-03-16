@@ -2,19 +2,20 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
-# Copy go.mod/go.sum and download deps
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy all Go source files
 COPY *.go ./
 
-# Build the parser binary
-RUN CGO_ENABLED=0  go build -o parser .
+RUN CGO_ENABLED=0 go build -o parser .
 
-# Build the HTTP server
 COPY server/ ./server/
-RUN cd server && CGO_ENABLED=0 go build -o /app/server .
+WORKDIR /app/server
+RUN CGO_ENABLED=0 go build -o /app/server .
+
+# Debug - check binaries exist
+WORKDIR /app
+RUN ls -la /app/
 
 # --- Runtime ---
 FROM alpine:3.21
