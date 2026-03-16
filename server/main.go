@@ -24,10 +24,14 @@ type rateLimiter struct {
 var limiter = &rateLimiter{requests: make(map[string][]time.Time)}
 
 const (
-	rateWindow   = time.Minute
-	rateMax      = 10
-	maxBodyBytes = 1 << 30 // 1 GB
+	rateWindow    = time.Minute
+	rateMax       = 10
+	maxBodyBytes  = 1 << 30 // 1 GB
+	maxConcurrent = 2       // max simultaneous parsers
 )
+
+// Semaphore limits concurrent parser processes
+var parseSem = make(chan struct{}, maxConcurrent)
 
 func (rl *rateLimiter) allow(key string) bool {
 	rl.mu.Lock()
@@ -158,7 +162,16 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fix 3: Limit body size to 1 GB
+	// Concurrency limit: max 2 simultaneous parsers
+	select {
+	case parseSem <- struct{}{}:
+		defer func() { <-parseSem }()
+	default:
+		http.Error(w, "Server busy, try again later", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Limit body size to 1 GB
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 
 	// Buffer body to a temp file (parser needs seekable input)
