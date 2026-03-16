@@ -90,10 +90,23 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Spawn the parser binary, pipe request body to stdin
-	cmd := exec.Command("./parser")
-	cmd.Stdin = r.Body
-	defer r.Body.Close()
+	// Buffer body to a temp file (parser needs seekable input)
+	tmpFile, err := os.CreateTemp("", "demo-*.dem")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to create temp file: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := io.Copy(tmpFile, r.Body); err != nil {
+		http.Error(w, fmt.Sprintf("failed to buffer demo: %v", err), http.StatusInternalServerError)
+		return
+	}
+	r.Body.Close()
+
+	// Spawn the parser binary with the temp file path
+	cmd := exec.Command("./parser", tmpFile.Name())
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
