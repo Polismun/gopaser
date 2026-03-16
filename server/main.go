@@ -25,13 +25,26 @@ func main() {
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
+func setCORS(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+}
+
 func handleParse(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+
+	// Handle CORS preflight
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Spawn the parser binary, pipe request body to stdin
 	cmd := exec.Command("./parser")
 	cmd.Stdin = r.Body
 	defer r.Body.Close()
@@ -53,10 +66,7 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stream parser JSON output directly to the HTTP response
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	io.Copy(w, stdout)
 
 	stderrBytes, _ := io.ReadAll(stderr)
