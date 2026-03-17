@@ -77,6 +77,7 @@ func main() {
 	http.HandleFunc("/demo/save", handleDemoSave)
 	http.HandleFunc("/demo/", handleDemoRoute)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
