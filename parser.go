@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 
 	dem "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs"
 	events "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs/events"
@@ -33,7 +34,6 @@ func main() {
 	}
 
 	p := dem.NewParser(reader)
-	defer p.Close()
 
 	header, err := p.ParseHeader()
 	if err != nil {
@@ -95,6 +95,10 @@ func main() {
 			Assists: player.Assists(),
 		})
 	}
+
+	// Free demoinfocs library state (~7 GB) BEFORE JSON encoding
+	p.Close()
+	runtime.GC()
 
 	encoder := json.NewEncoder(os.Stdout)
 	if err := encoder.Encode(result); err != nil {
