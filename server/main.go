@@ -2,11 +2,9 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"sync"
 	"time"
 )
@@ -24,10 +22,12 @@ type rateLimiter struct {
 var limiter = &rateLimiter{requests: make(map[string][]time.Time)}
 
 const (
-	rateWindow    = time.Minute
-	rateMax       = 10
-	maxBodyBytes  = 1 << 30 // 1 GB
-	maxConcurrent = 2       // max simultaneous parsers
+	rateWindow       = time.Minute
+	rateMax          = 10
+	maxBodyBytes     = 1 << 30   // 1 GB
+	maxConcurrent    = 2         // max simultaneous parsers
+	maxDemoSaveBytes = 200 << 20 // 200 MB for parsed JSON
+	demosDir         = "demos"
 )
 
 // Semaphore limits concurrent parser processes
@@ -63,13 +63,19 @@ func main() {
 		port = "8080"
 	}
 
-	// Fix 1: VERIFY_URL mandatory in production
 	verifyURL = os.Getenv("VERIFY_URL")
 	if verifyURL == "" && os.Getenv("DEV_MODE") != "true" {
 		log.Fatal("VERIFY_URL is required (set DEV_MODE=true to skip)")
 	}
 
+	// Ensure demos directory exists
+	if err := os.MkdirAll(demosDir, 0755); err != nil {
+		log.Fatalf("Cannot create demos directory: %v", err)
+	}
+
 	http.HandleFunc("/parse", handleParse)
+	http.HandleFunc("/demo/save", handleDemoSave)
+	http.HandleFunc("/demo/", handleDemoRoute)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -79,10 +85,12 @@ func main() {
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
+// --- Shared helpers ---
+
 func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Demo-Owner")
 }
 
 func verifyAuth(authHeader string) (int, error) {
@@ -103,7 +111,6 @@ func verifyAuth(authHeader string) (int, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// Fix 5: Don't leak internal error details to client
 		switch resp.StatusCode {
 		case http.StatusUnauthorized:
 			return resp.StatusCode, fmt.Errorf("unauthorized")
@@ -124,96 +131,4 @@ func clientIP(r *http.Request) string {
 		return ip
 	}
 	return r.RemoteAddr
-}
-
-func handleParse(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
-
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Fix 4: Rate limit by IP
-	if !limiter.allow(clientIP(r)) {
-		http.Error(w, "Rate limited", http.StatusTooManyRequests)
-		return
-	}
-
-	// Fix 2: Authorization header mandatory in production
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" && verifyURL != "" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	status, err := verifyAuth(authHeader)
-	if status != http.StatusOK {
-		errMsg := "Unauthorized"
-		if err != nil {
-			errMsg = err.Error()
-		}
-		http.Error(w, errMsg, status)
-		return
-	}
-
-	// Concurrency limit: max 2 simultaneous parsers
-	select {
-	case parseSem <- struct{}{}:
-		defer func() { <-parseSem }()
-	default:
-		http.Error(w, "Server busy, try again later", http.StatusServiceUnavailable)
-		return
-	}
-
-	// Limit body size to 1 GB
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-
-	// Buffer body to a temp file (parser needs seekable input)
-	tmpFile, err := os.CreateTemp("", "demo-*.dem")
-	if err != nil {
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-		return
-	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
-
-	if _, err := io.Copy(tmpFile, r.Body); err != nil {
-		http.Error(w, "File too large or upload failed", http.StatusRequestEntityTooLarge)
-		return
-	}
-	r.Body.Close()
-
-	cmd := exec.Command("./parser", tmpFile.Name())
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-		return
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-		return
-	}
-
-	if err := cmd.Start(); err != nil {
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	io.Copy(w, stdout)
-
-	stderrBytes, _ := io.ReadAll(stderr)
-
-	if err := cmd.Wait(); err != nil {
-		log.Printf("Parser error: %v | stderr: %s", err, string(stderrBytes))
-	}
 }
