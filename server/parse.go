@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"io"
 	"log"
 	"net/http"
@@ -53,6 +54,18 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 
+	// Decompress if client sent gzip (client-side compression of .dem)
+	var bodyReader io.Reader = r.Body
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			http.Error(w, "Invalid gzip", http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		bodyReader = gz
+	}
+
 	// Buffer body to a temp file (parser needs seekable input)
 	tmpFile, err := os.CreateTemp("", "demo-*.dem")
 	if err != nil {
@@ -62,7 +75,7 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 	defer os.Remove(tmpFile.Name())
 	defer tmpFile.Close()
 
-	if _, err := io.Copy(tmpFile, r.Body); err != nil {
+	if _, err := io.Copy(tmpFile, bodyReader); err != nil {
 		http.Error(w, "File too large or upload failed", http.StatusRequestEntityTooLarge)
 		return
 	}
