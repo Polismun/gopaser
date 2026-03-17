@@ -91,7 +91,7 @@ func main() {
 func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Demo-Owner")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Demo-Owner, Content-Encoding")
 }
 
 func verifyAuth(authHeader string) (int, error) {
