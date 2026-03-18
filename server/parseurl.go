@@ -13,29 +13,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
-	fhttp "github.com/bogdanfinn/fhttp"
-	tls_client "github.com/bogdanfinn/tls-client"
-	"github.com/bogdanfinn/tls-client/profiles"
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/stealth"
 	"github.com/nwaples/rardecode/v2"
 )
 
 // RAR magic bytes: 0x52 0x61 0x72
 var rarMagic = []byte{0x52, 0x61, 0x72}
-
-// TLS client with Chrome fingerprint (bypasses Cloudflare TLS fingerprinting)
-var chromeTLS tls_client.HttpClient
-
-func init() {
-	var err error
-	chromeTLS, err = tls_client.NewHttpClient(nil,
-		tls_client.WithClientProfile(profiles.Chrome_146),
-		tls_client.WithTimeoutSeconds(300),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create TLS client: %v", err)
-	}
-}
 
 type extractedDem struct {
 	path string // temp file path
@@ -48,8 +35,7 @@ type parsedDemo struct {
 	DemName   string `json:"demName"`
 }
 
-// POST /parse-url — download demo archive from HLTV URL, extract all .dem files, parse each, save JSON.
-// Uses Chrome TLS fingerprint to bypass Cloudflare.
+// POST /parse-url — download demo archive from HLTV via headless Chrome, extract .dem files, parse each.
 func handleParseURL(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 
@@ -104,7 +90,7 @@ func handleParseURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Phase 1: Download + extract ALL .dem files BEFORE semaphore ---
+	// --- Phase 1: Download via headless Chrome + extract ALL .dem files BEFORE semaphore ---
 
 	dems, err := downloadAndExtractAll(r.Context(), demoURL)
 	if err != nil {
@@ -165,69 +151,121 @@ func handleParseURL(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// downloadAndExtractAll downloads from HLTV URL using Chrome TLS fingerprint,
-// detects format, extracts all .dem files.
-func downloadAndExtractAll(ctx context.Context, rawURL string) ([]extractedDem, error) {
-	req, err := fhttp.NewRequest("GET", rawURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Referer", "https://www.hltv.org/")
-
-	resp, err := chromeTLS.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download returned HTTP %d", resp.StatusCode)
-	}
-
-	// Save to temp file with download size limit
-	dlTmp, err := os.CreateTemp("", "demo-dl-*")
+// downloadAndExtractAll uses headless Chrome to download from HLTV (bypasses Cloudflare JS challenge),
+// then detects format and extracts all .dem files.
+func downloadAndExtractAll(_ context.Context, rawURL string) ([]extractedDem, error) {
+	// Download the file via headless Chrome with stealth anti-detection
+	dlPath, err := downloadFromHLTV(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	dlTmpName := dlTmp.Name()
-
-	limited := io.LimitReader(resp.Body, maxDownloadBytes)
-	if _, err := io.Copy(dlTmp, limited); err != nil {
-		dlTmp.Close()
-		os.Remove(dlTmpName)
-		return nil, fmt.Errorf("download write failed: %w", err)
-	}
-	dlTmp.Close()
+	defer os.Remove(dlPath)
 
 	// Detect format via magic bytes
-	format, err := detectFormat(dlTmpName)
+	format, err := detectFormat(dlPath)
 	if err != nil {
-		os.Remove(dlTmpName)
 		return nil, err
 	}
 
 	switch format {
 	case "rar":
-		dems, err := extractAllDemsFromRAR(dlTmpName)
-		os.Remove(dlTmpName)
+		dems, err := extractAllDemsFromRAR(dlPath)
 		if err != nil {
 			return nil, fmt.Errorf("RAR extraction failed: %w", err)
 		}
 		return dems, nil
 
 	case "zstd":
-		demPath, err := decompressZstd(dlTmpName)
-		os.Remove(dlTmpName)
+		demPath, err := decompressZstd(dlPath)
 		if err != nil {
 			return nil, fmt.Errorf("zstd decompression failed: %w", err)
 		}
 		return []extractedDem{{path: demPath, name: "demo.dem"}}, nil
 
 	default:
-		return []extractedDem{{path: dlTmpName, name: "demo.dem"}}, nil
+		// Raw .dem — copy so caller can safely os.Remove
+		dst, err := os.CreateTemp("", "dem-copy-*.dem")
+		if err != nil {
+			return nil, err
+		}
+		src, err := os.Open(dlPath)
+		if err != nil {
+			dst.Close()
+			os.Remove(dst.Name())
+			return nil, err
+		}
+		_, err = io.Copy(dst, src)
+		src.Close()
+		dst.Close()
+		if err != nil {
+			os.Remove(dst.Name())
+			return nil, err
+		}
+		return []extractedDem{{path: dst.Name(), name: "demo.dem"}}, nil
 	}
+}
+
+// downloadFromHLTV launches headless Chrome with stealth to bypass Cloudflare,
+// navigates to the HLTV download URL, waits for the file download, and returns the temp file path.
+func downloadFromHLTV(rawURL string) (string, error) {
+	log.Printf("[parse-url] Launching headless Chrome for %s", rawURL)
+
+	// Find or auto-download Chromium
+	path, found := launcher.LookPath()
+	if !found {
+		log.Printf("[parse-url] Chromium not found, downloading...")
+	}
+
+	u := launcher.New().
+		Bin(path).
+		Headless(true).
+		Set("no-sandbox").         // required for running as root on VPS
+		Set("disable-gpu").
+		Set("disable-dev-shm-usage"). // prevent /dev/shm issues in containers
+		MustLaunch()
+
+	browser := rod.New().ControlURL(u).MustConnect()
+	defer browser.MustClose()
+
+	// Create stealth page (anti-bot-detection patches)
+	page := stealth.MustPage(browser)
+
+	// Set up download wait BEFORE navigation
+	waitDownload := browser.MustWaitDownload()
+
+	// Navigate to HLTV download URL
+	// This triggers: Cloudflare JS challenge → auto-resolve → redirect → file download
+	log.Printf("[parse-url] Navigating to %s", rawURL)
+	page.Timeout(5 * time.Minute).MustNavigate(rawURL)
+
+	// Wait for the download to complete (returns file bytes)
+	log.Printf("[parse-url] Waiting for download...")
+	data := waitDownload()
+
+	if len(data) == 0 {
+		return "", fmt.Errorf("download returned empty file")
+	}
+
+	log.Printf("[parse-url] Downloaded %d bytes", len(data))
+
+	// Check size limit
+	if int64(len(data)) > maxDownloadBytes {
+		return "", fmt.Errorf("downloaded file exceeds %d bytes limit", maxDownloadBytes)
+	}
+
+	// Write to temp file
+	tmp, err := os.CreateTemp("", "demo-dl-*.rar")
+	if err != nil {
+		return "", err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	tmp.Close()
+
+	return tmp.Name(), nil
 }
 
 // parseAndSave runs the parser on a .dem file, captures output, gzips to demos/, returns metadata.
