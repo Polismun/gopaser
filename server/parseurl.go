@@ -225,13 +225,13 @@ func downloadFromHLTV(rawURL string) (string, error) {
 
 	u := launcher.New().
 		Bin(path).
-		Headless(false).            // use old headless mode via flag below
-		Set("headless", "new").     // new headless mode (less detectable)
+		Headless(false).        // use old headless mode via flag below
+		Set("headless", "new"). // new headless mode (less detectable)
 		Set("no-sandbox").
 		Set("disable-gpu").
 		Set("disable-dev-shm-usage").
 		Set("disable-blink-features", "AutomationControlled"). // hide automation
-		Delete("enable-automation"). // remove automation flag
+		Delete("enable-automation").                           // remove automation flag
 		MustLaunch()
 
 	browser := rod.New().ControlURL(u).MustConnect()
@@ -247,13 +247,24 @@ func downloadFromHLTV(rawURL string) (string, error) {
 	}.Call(browser)
 
 	// Navigate to HLTV download URL
-	// This triggers: Cloudflare JS challenge → auto-resolve → redirect → file download
 	log.Printf("[parse-url] Navigating to %s", rawURL)
 	if err := rod.Try(func() {
 		page.Timeout(5 * time.Minute).MustNavigate(rawURL)
 	}); err != nil {
 		log.Printf("[parse-url] Navigation error (may be normal for downloads): %v", err)
 	}
+
+	// Wait for Cloudflare challenge to resolve
+	time.Sleep(15 * time.Second)
+
+	// Debug: screenshot + page URL + title
+	currentURL := page.MustInfo().URL
+	title := page.MustInfo().Title
+	log.Printf("[parse-url] After 15s — URL: %s | Title: %s", currentURL, title)
+	_ = rod.Try(func() {
+		page.MustScreenshot("/tmp/hltv-debug.png")
+		log.Printf("[parse-url] Screenshot saved to /tmp/hltv-debug.png")
+	})
 
 	// Poll the download directory for completed files
 	log.Printf("[parse-url] Waiting for download in %s...", dlDir)
