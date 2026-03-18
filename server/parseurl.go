@@ -225,10 +225,13 @@ func downloadFromHLTV(rawURL string) (string, error) {
 
 	u := launcher.New().
 		Bin(path).
-		Headless(true).
+		Headless(false).            // use old headless mode via flag below
+		Set("headless", "new").     // new headless mode (less detectable)
 		Set("no-sandbox").
 		Set("disable-gpu").
 		Set("disable-dev-shm-usage").
+		Set("disable-blink-features", "AutomationControlled"). // hide automation
+		Delete("enable-automation"). // remove automation flag
 		MustLaunch()
 
 	browser := rod.New().ControlURL(u).MustConnect()
