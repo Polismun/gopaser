@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/go-rod/stealth"
 	"github.com/nwaples/rardecode/v2"
 )
@@ -206,9 +207,15 @@ func downloadAndExtractAll(_ context.Context, rawURL string) ([]extractedDem, er
 }
 
 // downloadFromHLTV launches headless Chrome with stealth to bypass Cloudflare,
-// navigates to the HLTV download URL, waits for the file download, and returns the temp file path.
+// navigates to the HLTV download URL, polls for the downloaded file, and returns the temp file path.
 func downloadFromHLTV(rawURL string) (string, error) {
 	log.Printf("[parse-url] Launching headless Chrome for %s", rawURL)
+
+	// Create a temp download directory
+	dlDir, err := os.MkdirTemp("", "hltv-dl-*")
+	if err != nil {
+		return "", err
+	}
 
 	// Find or auto-download Chromium
 	path, found := launcher.LookPath()
@@ -219,9 +226,9 @@ func downloadFromHLTV(rawURL string) (string, error) {
 	u := launcher.New().
 		Bin(path).
 		Headless(true).
-		Set("no-sandbox").         // required for running as root on VPS
+		Set("no-sandbox").
 		Set("disable-gpu").
-		Set("disable-dev-shm-usage"). // prevent /dev/shm issues in containers
+		Set("disable-dev-shm-usage").
 		MustLaunch()
 
 	browser := rod.New().ControlURL(u).MustConnect()
@@ -230,42 +237,100 @@ func downloadFromHLTV(rawURL string) (string, error) {
 	// Create stealth page (anti-bot-detection patches)
 	page := stealth.MustPage(browser)
 
-	// Set up download wait BEFORE navigation
-	waitDownload := browser.MustWaitDownload()
+	// Configure browser download behavior to save to our temp directory via CDP
+	proto.BrowserSetDownloadBehavior{
+		Behavior:     proto.BrowserSetDownloadBehaviorBehaviorAllowAndName,
+		DownloadPath: dlDir,
+	}.Call(browser)
 
 	// Navigate to HLTV download URL
 	// This triggers: Cloudflare JS challenge → auto-resolve → redirect → file download
 	log.Printf("[parse-url] Navigating to %s", rawURL)
-	page.Timeout(5 * time.Minute).MustNavigate(rawURL)
-
-	// Wait for the download to complete (returns file bytes)
-	log.Printf("[parse-url] Waiting for download...")
-	data := waitDownload()
-
-	if len(data) == 0 {
-		return "", fmt.Errorf("download returned empty file")
+	if err := rod.Try(func() {
+		page.Timeout(5 * time.Minute).MustNavigate(rawURL)
+	}); err != nil {
+		log.Printf("[parse-url] Navigation error (may be normal for downloads): %v", err)
 	}
 
-	log.Printf("[parse-url] Downloaded %d bytes", len(data))
+	// Poll the download directory for completed files
+	log.Printf("[parse-url] Waiting for download in %s...", dlDir)
+	timeout := time.After(5 * time.Minute)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
-	// Check size limit
-	if int64(len(data)) > maxDownloadBytes {
-		return "", fmt.Errorf("downloaded file exceeds %d bytes limit", maxDownloadBytes)
-	}
+	for {
+		select {
+		case <-timeout:
+			os.RemoveAll(dlDir)
+			return "", fmt.Errorf("download timed out after 5 minutes")
+		case <-ticker.C:
+			entries, err := os.ReadDir(dlDir)
+			if err != nil || len(entries) == 0 {
+				continue
+			}
 
-	// Write to temp file
-	tmp, err := os.CreateTemp("", "demo-dl-*.rar")
-	if err != nil {
-		return "", err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return "", err
-	}
-	tmp.Close()
+			// Look for a completed file (not a .crdownload partial)
+			for _, entry := range entries {
+				name := entry.Name()
+				if strings.HasSuffix(name, ".crdownload") || strings.HasSuffix(name, ".tmp") {
+					info, _ := entry.Info()
+					if info != nil {
+						log.Printf("[parse-url] Downloading... %s (%d bytes)", name, info.Size())
+					}
+					continue
+				}
 
-	return tmp.Name(), nil
+				// Found a completed file
+				filePath := filepath.Join(dlDir, name)
+				info, err := os.Stat(filePath)
+				if err != nil || info.Size() == 0 {
+					continue
+				}
+
+				// Wait a moment to ensure write is fully flushed
+				time.Sleep(1 * time.Second)
+
+				log.Printf("[parse-url] Downloaded %s (%d bytes)", name, info.Size())
+
+				if info.Size() > maxDownloadBytes {
+					os.RemoveAll(dlDir)
+					return "", fmt.Errorf("downloaded file exceeds %d bytes limit", maxDownloadBytes)
+				}
+
+				// Move file out of download dir
+				destPath, err := os.CreateTemp("", "demo-dl-*")
+				if err != nil {
+					os.RemoveAll(dlDir)
+					return "", err
+				}
+				destPath.Close()
+
+				src, err := os.Open(filePath)
+				if err != nil {
+					os.RemoveAll(dlDir)
+					os.Remove(destPath.Name())
+					return "", err
+				}
+				dst, err := os.Create(destPath.Name())
+				if err != nil {
+					src.Close()
+					os.RemoveAll(dlDir)
+					return "", err
+				}
+				_, err = io.Copy(dst, src)
+				src.Close()
+				dst.Close()
+				os.RemoveAll(dlDir)
+
+				if err != nil {
+					os.Remove(destPath.Name())
+					return "", err
+				}
+
+				return destPath.Name(), nil
+			}
+		}
+	}
 }
 
 // parseAndSave runs the parser on a .dem file, captures output, gzips to demos/, returns metadata.
