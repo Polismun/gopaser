@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,8 +30,9 @@ type parsedDemo struct {
 	DemName   string `json:"demName"`
 }
 
-// POST /parse-url — download demo archive from URL, extract all .dem files, parse each, save JSON
-func handleParseURL(w http.ResponseWriter, r *http.Request) {
+// POST /parse-multi — accept uploaded .rar/.dem/.zst, extract all .dem files, parse each, save JSON.
+// The browser downloads the archive from HLTV (bypasses Cloudflare) then uploads it here.
+func handleParseMulti(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 
 	if r.Method == http.MethodOptions {
@@ -64,37 +64,43 @@ func handleParseURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse JSON body { "url": "https://..." }
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	var body struct {
-		URL string `json:"url"`
+	// --- Phase 1: Buffer body to disk BEFORE semaphore (same pattern as handleParse) ---
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+
+	var bodyReader io.Reader = r.Body
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			http.Error(w, "Invalid gzip", http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		bodyReader = gz
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+
+	tmpFile, err := os.CreateTemp("", "multi-upload-*")
+	if err != nil {
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := io.Copy(tmpFile, bodyReader); err != nil {
+		http.Error(w, "File too large or upload failed", http.StatusRequestEntityTooLarge)
 		return
 	}
 	r.Body.Close()
+	tmpFile.Close()
 
-	// Normalize relative HLTV paths (e.g. "/download/demo/123") to full URL
-	demoURL := body.URL
-	if strings.HasPrefix(demoURL, "/") {
-		demoURL = "https://www.hltv.org" + demoURL
-	}
-
-	if err := validateDemoURL(demoURL); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// --- Phase 1: Download + extract ALL .dem files BEFORE semaphore ---
-
-	dems, err := downloadAndExtractAll(r.Context(), demoURL)
+	// Detect format and extract .dem files
+	dems, err := extractDems(tmpFile.Name())
 	if err != nil {
-		log.Printf("[parse-url] download/extract failed: %v", err)
-		http.Error(w, fmt.Sprintf("Download failed: %v", err), http.StatusBadGateway)
+		log.Printf("[parse-multi] extract failed: %v", err)
+		http.Error(w, fmt.Sprintf("Extract failed: %v", err), http.StatusBadRequest)
 		return
 	}
-	// Ensure cleanup of all extracted .dem files
 	defer func() {
 		for _, d := range dems {
 			os.Remove(d.path)
@@ -128,11 +134,10 @@ func handleParseURL(w http.ResponseWriter, r *http.Request) {
 	for _, dem := range dems {
 		result, err := parseAndSave(dem)
 		if err != nil {
-			log.Printf("[parse-url] failed to parse %s: %v", dem.name, err)
-			continue // skip failed demos, don't abort entire batch
+			log.Printf("[parse-multi] failed to parse %s: %v", dem.name, err)
+			continue
 		}
 		results = append(results, result)
-		// Free disk space immediately after each parse
 		os.Remove(dem.path)
 	}
 
@@ -141,12 +146,51 @@ func handleParseURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[parse-url] Parsed %d/%d demos from archive", len(results), len(dems))
+	log.Printf("[parse-multi] Parsed %d/%d demos", len(results), len(dems))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"demos": results,
 	})
+}
+
+// extractDems detects the format of the file and returns extracted .dem file(s).
+func extractDems(path string) ([]extractedDem, error) {
+	format, err := detectFormat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	switch format {
+	case "rar":
+		return extractAllDemsFromRAR(path)
+	case "zstd":
+		demPath, err := decompressZstd(path)
+		if err != nil {
+			return nil, err
+		}
+		return []extractedDem{{path: demPath, name: "demo.dem"}}, nil
+	default:
+		// Raw .dem — make a copy so caller can os.Remove safely
+		dst, err := os.CreateTemp("", "dem-copy-*.dem")
+		if err != nil {
+			return nil, err
+		}
+		src, err := os.Open(path)
+		if err != nil {
+			dst.Close()
+			os.Remove(dst.Name())
+			return nil, err
+		}
+		_, err = io.Copy(dst, src)
+		src.Close()
+		dst.Close()
+		if err != nil {
+			os.Remove(dst.Name())
+			return nil, err
+		}
+		return []extractedDem{{path: dst.Name(), name: "demo.dem"}}, nil
+	}
 }
 
 // parseAndSave runs the parser on a .dem file, captures output, gzips to demos/, returns metadata.
@@ -166,7 +210,6 @@ func parseAndSave(dem extractedDem) (parsedDemo, error) {
 		return parsedDemo{}, err
 	}
 
-	// Capture stdout to temp file
 	outTmp, err := os.CreateTemp("", "parse-out-*.json")
 	if err != nil {
 		cmd.Process.Kill()
@@ -194,7 +237,7 @@ func parseAndSave(dem extractedDem) (parsedDemo, error) {
 	gzTmpName := gzTmp.Name()
 	defer func() {
 		gzTmp.Close()
-		os.Remove(gzTmpName) // no-op after successful rename
+		os.Remove(gzTmpName)
 	}()
 
 	src, err := os.Open(outTmp.Name())
@@ -228,81 +271,13 @@ func parseAndSave(dem extractedDem) (parsedDemo, error) {
 		return parsedDemo{}, err
 	}
 
-	log.Printf("[parse-url] Demo saved: %s (%d bytes gzipped) from %s", id, sizeBytes, dem.name)
+	log.Printf("[parse-multi] Demo saved: %s (%d bytes gzipped) from %s", id, sizeBytes, dem.name)
 
 	return parsedDemo{
 		ID:        id,
 		SizeBytes: sizeBytes,
 		DemName:   dem.name,
 	}, nil
-}
-
-// downloadAndExtractAll downloads from URL, detects format, extracts all .dem files.
-// Returns slice of extracted demos. Caller must os.Remove each path.
-func downloadAndExtractAll(ctx context.Context, rawURL string) ([]extractedDem, error) {
-	dlCtx, dlCancel := context.WithTimeout(ctx, downloadTimeout)
-	defer dlCancel()
-
-	req, err := http.NewRequestWithContext(dlCtx, "GET", rawURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "*/*")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download returned HTTP %d", resp.StatusCode)
-	}
-
-	// Save to temp file with download size limit
-	dlTmp, err := os.CreateTemp("", "demo-dl-*")
-	if err != nil {
-		return nil, err
-	}
-	dlTmpName := dlTmp.Name()
-
-	limited := io.LimitReader(resp.Body, maxDownloadBytes)
-	if _, err := io.Copy(dlTmp, limited); err != nil {
-		dlTmp.Close()
-		os.Remove(dlTmpName)
-		return nil, fmt.Errorf("download write failed: %w", err)
-	}
-	dlTmp.Close()
-
-	// Detect format via magic bytes
-	format, err := detectFormat(dlTmpName)
-	if err != nil {
-		os.Remove(dlTmpName)
-		return nil, err
-	}
-
-	switch format {
-	case "rar":
-		dems, err := extractAllDemsFromRAR(dlTmpName)
-		os.Remove(dlTmpName) // cleanup archive
-		if err != nil {
-			return nil, fmt.Errorf("RAR extraction failed: %w", err)
-		}
-		return dems, nil
-
-	case "zstd":
-		demPath, err := decompressZstd(dlTmpName)
-		os.Remove(dlTmpName)
-		if err != nil {
-			return nil, fmt.Errorf("zstd decompression failed: %w", err)
-		}
-		return []extractedDem{{path: demPath, name: filepath.Base(rawURL)}}, nil
-
-	default:
-		// Assume raw .dem
-		return []extractedDem{{path: dlTmpName, name: filepath.Base(rawURL)}}, nil
-	}
 }
 
 // detectFormat reads magic bytes to determine file format
@@ -316,7 +291,7 @@ func detectFormat(path string) (string, error) {
 	buf := make([]byte, 4)
 	n, err := f.Read(buf)
 	if err != nil || n < 3 {
-		return "dem", nil // assume raw .dem if too small to detect
+		return "dem", nil
 	}
 
 	if buf[0] == rarMagic[0] && buf[1] == rarMagic[1] && buf[2] == rarMagic[2] {
@@ -352,7 +327,6 @@ func extractAllDemsFromRAR(archivePath string) ([]extractedDem, error) {
 			break
 		}
 		if err != nil {
-			// Cleanup already extracted files on error
 			for _, d := range dems {
 				os.Remove(d.path)
 			}
@@ -364,10 +338,9 @@ func extractAllDemsFromRAR(archivePath string) ([]extractedDem, error) {
 			continue
 		}
 
-		// Extract to temp file with per-file + total decompression size limit (RAR bomb protection)
 		remaining := maxDecompressedBytes - totalDecompressed
 		if remaining <= 0 {
-			log.Printf("[parse-url] Total decompression limit reached, skipping remaining .dem files")
+			log.Printf("[parse-multi] Total decompression limit reached, skipping remaining files")
 			break
 		}
 
@@ -392,10 +365,8 @@ func extractAllDemsFromRAR(archivePath string) ([]extractedDem, error) {
 		}
 
 		totalDecompressed += written
-
-		// Use only the base filename (path traversal protection)
 		baseName := filepath.Base(name)
-		log.Printf("[parse-url] Extracted %s (%d bytes) from RAR", baseName, written)
+		log.Printf("[parse-multi] Extracted %s (%d bytes) from RAR", baseName, written)
 
 		dems = append(dems, extractedDem{
 			path: demTmp.Name(),
@@ -408,28 +379,4 @@ func extractAllDemsFromRAR(archivePath string) ([]extractedDem, error) {
 	}
 
 	return dems, nil
-}
-
-// validateDemoURL checks that the URL is a safe HLTV demo download link.
-// SSRF protection: only *.hltv.org HTTPS URLs are allowed.
-func validateDemoURL(rawURL string) error {
-	if rawURL == "" {
-		return fmt.Errorf("URL is required")
-	}
-
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
-	}
-
-	if u.Scheme != "https" {
-		return fmt.Errorf("only HTTPS URLs are allowed")
-	}
-
-	host := strings.ToLower(u.Hostname())
-	if host != "hltv.org" && !strings.HasSuffix(host, ".hltv.org") {
-		return fmt.Errorf("only *.hltv.org URLs are allowed")
-	}
-
-	return nil
 }
