@@ -75,14 +75,20 @@ func handleParseURL(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	if err := validateDemoURL(body.URL); err != nil {
+	// Normalize relative HLTV paths (e.g. "/download/demo/123") to full URL
+	demoURL := body.URL
+	if strings.HasPrefix(demoURL, "/") {
+		demoURL = "https://www.hltv.org" + demoURL
+	}
+
+	if err := validateDemoURL(demoURL); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// --- Phase 1: Download + extract ALL .dem files BEFORE semaphore ---
 
-	dems, err := downloadAndExtractAll(r.Context(), body.URL)
+	dems, err := downloadAndExtractAll(r.Context(), demoURL)
 	if err != nil {
 		log.Printf("[parse-url] download/extract failed: %v", err)
 		http.Error(w, fmt.Sprintf("Download failed: %v", err), http.StatusBadGateway)
