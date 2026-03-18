@@ -247,6 +247,8 @@ func downloadAndExtractAll(ctx context.Context, rawURL string) ([]extractedDem, 
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "*/*")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
