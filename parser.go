@@ -76,7 +76,7 @@ func main() {
 	}
 
 	// Extract final KDA stats
-	for _, player := range p.GameState().Participants().Playing() {
+	for _, player := range p.GameState().Participants().All() {
 		if player == nil {
 			continue
 		}
