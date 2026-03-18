@@ -97,7 +97,7 @@ func main() {
 	// Cleanup stale temp files from previous crashes
 	cleanupTempFiles()
 
-	http.HandleFunc("/parse-multi", handleParseMulti)
+	http.HandleFunc("/parse-url", handleParseURL)
 	http.HandleFunc("/parse", handleParse)
 	http.HandleFunc("/demo/save", handleDemoSave)
 	http.HandleFunc("/demo/", handleDemoRoute)
