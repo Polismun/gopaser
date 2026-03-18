@@ -27,11 +27,12 @@ var mediaLimiter = &rateLimiter{
 
 // MIME type → file extension mapping
 var mimeToExt = map[string]string{
-	"image/jpeg": ".jpg",
-	"image/png":  ".png",
-	"image/webp": ".webp",
-	"video/mp4":  ".mp4",
-	"video/webm": ".webm",
+	"image/jpeg":    ".jpg",
+	"image/png":     ".png",
+	"image/webp":    ".webp",
+	"image/svg+xml": ".svg",
+	"video/mp4":     ".mp4",
+	"video/webm":    ".webm",
 }
 
 // File extension → MIME type mapping (reverse of mimeToExt)
@@ -40,6 +41,7 @@ var extToMime = map[string]string{
 	".jpeg": "image/jpeg",
 	".png":  "image/png",
 	".webp": "image/webp",
+	".svg":  "image/svg+xml",
 	".mp4":  "video/mp4",
 	".webm": "video/webm",
 }
