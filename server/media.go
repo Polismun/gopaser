@@ -261,7 +261,7 @@ func handleMediaGet(w http.ResponseWriter, _ *http.Request, category, id string)
 	io.Copy(w, f)
 }
 
-// DELETE /media/{category}/{id} — auth required
+// DELETE /media/{category}/{id} — auth + strat ownership required
 func handleMediaDelete(w http.ResponseWriter, r *http.Request, category, id string) {
 	if !mediaLimiter.allow(clientIP(r)) {
 		http.Error(w, "Rate limited", http.StatusTooManyRequests)
@@ -273,7 +273,15 @@ func handleMediaDelete(w http.ResponseWriter, r *http.Request, category, id stri
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	status, err := verifyAuthAt(authHeader, "/api/verify-media")
+
+	stratId := r.Header.Get("X-Strat-Id")
+	if stratId == "" && verifyURL != "" {
+		http.Error(w, "Missing X-Strat-Id header", http.StatusBadRequest)
+		return
+	}
+
+	// Verify strat ownership via Vercel /api/verify-media-delete
+	status, err := verifyMediaDelete(stratId, authHeader)
 	if status != http.StatusOK {
 		errMsg := "Unauthorized"
 		if err != nil {

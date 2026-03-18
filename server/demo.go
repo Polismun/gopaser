@@ -153,8 +153,25 @@ func handleDemoRoute(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GET /demo/{id} — serve gzipped JSON (public, no auth)
+// GET /demo/{id} — serve gzipped JSON (visibility-checked via Vercel)
 func handleDemoGet(w http.ResponseWriter, r *http.Request, id string) {
+	if !readLimiter.allow(clientIP(r)) {
+		http.Error(w, "Rate limited", http.StatusTooManyRequests)
+		return
+	}
+
+	// Verify visibility via Vercel (cached 30s)
+	authHeader := r.Header.Get("Authorization")
+	status, err := verifyDemoRead(id, authHeader)
+	if status != http.StatusOK {
+		errMsg := "Access denied"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		http.Error(w, errMsg, status)
+		return
+	}
+
 	path := demoFilePath(id)
 
 	f, err := os.Open(path)
@@ -183,7 +200,7 @@ func handleDemoGet(w http.ResponseWriter, r *http.Request, id string) {
 	io.Copy(w, gz)
 }
 
-// DELETE /demo/{id} — auth required
+// DELETE /demo/{id} — auth + ownership required
 func handleDemoDelete(w http.ResponseWriter, r *http.Request, id string) {
 	if !limiter.allow(clientIP(r)) {
 		http.Error(w, "Rate limited", http.StatusTooManyRequests)
@@ -195,7 +212,9 @@ func handleDemoDelete(w http.ResponseWriter, r *http.Request, id string) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	status, err := verifyAuth(authHeader)
+
+	// Verify ownership via Vercel /api/verify-demo-delete
+	status, err := verifyDemoDelete(id, authHeader)
 	if status != http.StatusOK {
 		errMsg := "Unauthorized"
 		if err != nil {
