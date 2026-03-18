@@ -37,9 +37,7 @@ const (
 	maxDemoSaveBytes = 200 << 20 // 200 MB for parsed JSON
 	rateMaxRead          = 60        // 60 req/min per IP for demo reads
 	demosDir             = "demos"
-	maxDownloadBytes     int64 = 2 << 30     // 2 GB download limit for /parse-url
 	maxDecompressedBytes int64 = 2 << 30     // 2 GB decompressed limit (RAR bomb protection)
-	downloadTimeout      = 5 * time.Minute   // HTTP download timeout for /parse-url
 )
 
 // Semaphore limits concurrent parser processes
@@ -97,7 +95,7 @@ func main() {
 	// Cleanup stale temp files from previous crashes
 	cleanupTempFiles()
 
-	http.HandleFunc("/parse-url", handleParseURL)
+	http.HandleFunc("/parse-multi", handleParseMulti)
 	http.HandleFunc("/parse", handleParse)
 	http.HandleFunc("/demo/save", handleDemoSave)
 	http.HandleFunc("/demo/", handleDemoRoute)
