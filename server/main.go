@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,13 +26,17 @@ const (
 	rateWindow       = time.Minute
 	rateMax          = 10
 	maxBodyBytes     = 1 << 30   // 1 GB
-	maxConcurrent    = 2         // max simultaneous parsers
+	maxConcurrent    = 1         // max simultaneous parsers (RAM safety: ~7 GB per parse on 8 GB VPS)
+	queueTimeout     = 2 * time.Minute // max wait time in parsing queue
 	maxDemoSaveBytes = 200 << 20 // 200 MB for parsed JSON
 	demosDir         = "demos"
 )
 
 // Semaphore limits concurrent parser processes
 var parseSem = make(chan struct{}, maxConcurrent)
+
+// Queue tracking for /queue endpoint
+var queueWaiting atomic.Int32
 
 func (rl *rateLimiter) allow(key string) bool {
 	rl.mu.Lock()
@@ -76,6 +81,7 @@ func main() {
 	http.HandleFunc("/parse", handleParse)
 	http.HandleFunc("/demo/save", handleDemoSave)
 	http.HandleFunc("/demo/", handleDemoRoute)
+	http.HandleFunc("/queue", handleQueue)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		w.WriteHeader(http.StatusOK)

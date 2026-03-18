@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"context"
 	"io"
 	"log"
 	"net/http"
@@ -45,18 +46,12 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Concurrency limit: max 2 simultaneous parsers
-	select {
-	case parseSem <- struct{}{}:
-		defer func() { <-parseSem }()
-	default:
-		http.Error(w, "Server busy, try again later", http.StatusServiceUnavailable)
-		return
-	}
+	// --- Phase 1: Buffer body to disk BEFORE acquiring semaphore ---
+	// This allows multiple uploads to transfer simultaneously over the network
+	// while only one parser runs at a time (RAM safety).
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 
-	// Decompress if client sent gzip (client-side compression of .dem)
 	var bodyReader io.Reader = r.Body
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(r.Body)
@@ -68,7 +63,6 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 		bodyReader = gz
 	}
 
-	// Buffer body to a temp file (parser needs seekable input)
 	tmpFile, err := os.CreateTemp("", "demo-*.dem")
 	if err != nil {
 		http.Error(w, "Internal error", http.StatusInternalServerError)
@@ -95,6 +89,24 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 		parserInput = decompFile
 		log.Printf("Decompressed zstd demo to %s", decompFile)
 	}
+
+	// --- Phase 2: Wait in queue for parser slot (max queueTimeout) ---
+
+	queueWaiting.Add(1)
+	ctx, cancel := context.WithTimeout(r.Context(), queueTimeout)
+	defer cancel()
+
+	select {
+	case parseSem <- struct{}{}:
+		queueWaiting.Add(-1)
+		defer func() { <-parseSem }()
+	case <-ctx.Done():
+		queueWaiting.Add(-1)
+		http.Error(w, `{"error":"queue_timeout","message":"Server busy, queue timed out"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	// --- Phase 3: Run parser ---
 
 	cmd := exec.Command("./parser", parserInput)
 
