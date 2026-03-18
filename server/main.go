@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,13 +19,14 @@ var verifyURL string
 type rateLimiter struct {
 	mu       sync.Mutex
 	requests map[string][]time.Time
+	max      int // max requests per window (default: rateMaxDefault)
 }
 
-var limiter = &rateLimiter{requests: make(map[string][]time.Time)}
+var limiter = &rateLimiter{requests: make(map[string][]time.Time), max: rateMaxDefault}
 
 const (
 	rateWindow       = time.Minute
-	rateMax          = 10
+	rateMaxDefault   = 10
 	maxBodyBytes     = 1 << 30   // 1 GB
 	maxConcurrent    = 1         // max simultaneous parsers (RAM safety: ~7 GB per parse on 8 GB VPS)
 	queueTimeout     = 2 * time.Minute // max wait time in parsing queue
@@ -53,7 +55,7 @@ func (rl *rateLimiter) allow(key string) bool {
 		}
 	}
 
-	if len(valid) >= rateMax {
+	if len(valid) >= rl.max {
 		rl.requests[key] = valid
 		return false
 	}
@@ -73,14 +75,22 @@ func main() {
 		log.Fatal("VERIFY_URL is required (set DEV_MODE=true to skip)")
 	}
 
-	// Ensure demos directory exists
+	// Ensure storage directories exist
 	if err := os.MkdirAll(demosDir, 0755); err != nil {
 		log.Fatalf("Cannot create demos directory: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(mediaDir, "images"), 0755); err != nil {
+		log.Fatalf("Cannot create media/images directory: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(mediaDir, "videos"), 0755); err != nil {
+		log.Fatalf("Cannot create media/videos directory: %v", err)
 	}
 
 	http.HandleFunc("/parse", handleParse)
 	http.HandleFunc("/demo/save", handleDemoSave)
 	http.HandleFunc("/demo/", handleDemoRoute)
+	http.HandleFunc("/media/save", handleMediaSave)
+	http.HandleFunc("/media/", handleMediaRoute)
 	http.HandleFunc("/queue", handleQueue)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
@@ -100,12 +110,13 @@ func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Demo-Owner, Content-Encoding")
 }
 
-func verifyAuth(authHeader string) (int, error) {
+// verifyAuthAt verifies auth by calling the given API path on the Vercel app.
+func verifyAuthAt(authHeader string, apiPath string) (int, error) {
 	if verifyURL == "" {
 		return http.StatusOK, nil // DEV_MODE only
 	}
 
-	req, err := http.NewRequest("POST", verifyURL+"/api/verify-upload", nil)
+	req, err := http.NewRequest("POST", verifyURL+apiPath, nil)
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}
@@ -131,6 +142,11 @@ func verifyAuth(authHeader string) (int, error) {
 	}
 
 	return http.StatusOK, nil
+}
+
+// verifyAuth verifies auth via the default /api/verify-upload endpoint.
+func verifyAuth(authHeader string) (int, error) {
+	return verifyAuthAt(authHeader, "/api/verify-upload")
 }
 
 func clientIP(r *http.Request) string {
