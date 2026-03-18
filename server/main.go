@@ -86,6 +86,9 @@ func main() {
 		log.Fatalf("Cannot create media/videos directory: %v", err)
 	}
 
+	// Cleanup stale temp files from previous crashes
+	cleanupTempFiles()
+
 	http.HandleFunc("/parse", handleParse)
 	http.HandleFunc("/demo/save", handleDemoSave)
 	http.HandleFunc("/demo/", handleDemoRoute)

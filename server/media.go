@@ -164,6 +164,10 @@ func handleMediaSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "File too large or upload failed", http.StatusRequestEntityTooLarge)
 		return
 	}
+	if err := tmpFile.Sync(); err != nil {
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
 	if err := tmpFile.Close(); err != nil {
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
