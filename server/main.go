@@ -101,6 +101,7 @@ func main() {
 	http.HandleFunc("/demo/", handleDemoRoute)
 	http.HandleFunc("/media/save", handleMediaSave)
 	http.HandleFunc("/media/", handleMediaRoute)
+	http.HandleFunc("/cleanup-orphans", handleCleanupOrphans)
 	http.HandleFunc("/queue", handleQueue)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)

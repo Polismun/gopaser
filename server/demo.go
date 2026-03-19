@@ -238,3 +238,72 @@ func handleDemoDelete(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
+
+// POST /cleanup-orphans — admin-only, deletes VPS demo files with no Firestore DemoDoc
+func handleCleanupOrphans(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Admin auth via verify-upload (reuses existing admin check)
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" && verifyURL != "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if verifyURL != "" {
+		status, err := verifyAuthAt(authHeader, verifyURL+"/api/verify-upload")
+		if status != http.StatusOK {
+			msg := "Unauthorized"
+			if err != nil {
+				msg = err.Error()
+			}
+			http.Error(w, msg, status)
+			return
+		}
+	}
+
+	entries, err := os.ReadDir(demosDir)
+	if err != nil {
+		http.Error(w, "Failed to list demos", http.StatusInternalServerError)
+		return
+	}
+
+	var deleted []string
+	kept := 0
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".json.gz") {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".json.gz")
+
+		// Check if DemoDoc exists via verify-demo-read (no auth → 404 if missing, 403 if private)
+		status, _ := verifyDemoRead(id, "")
+		if status == http.StatusNotFound {
+			path := filepath.Join(demosDir, name)
+			if err := os.Remove(path); err == nil {
+				deleted = append(deleted, id)
+				log.Printf("[cleanup-orphans] Deleted orphan: %s", id)
+			}
+		} else {
+			kept++
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"deleted": deleted,
+		"kept":    kept,
+	})
+}
