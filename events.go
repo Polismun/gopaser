@@ -21,6 +21,20 @@ type bombState struct {
 	plantBeginY    float64 // planting player Y at BombPlantBegin, for fallback position
 }
 
+// spillSnapshot stores file positions for retroactive phantom purge.
+type spillSnapshot struct {
+	tickPos    int64
+	tickCount  int
+	shotPos    int64
+	shotCount  int
+	dmgPos     int64
+	dmgCount   int
+	killPos    int64
+	killCount  int
+	grenPos    int64
+	grenCount  int
+}
+
 // skipRoundState tracks knife/phantom round skipping.
 type skipRoundState struct {
 	active          bool      // true during a skipped round (knife)
@@ -28,13 +42,35 @@ type skipRoundState struct {
 	phantomPossible bool      // true after knife round ends: next round might be phantom
 	inFreeze        bool      // true between RoundStart and RoundFreezetimeEnd (skip FrameDone)
 	pendingFreeze   *TickData // buffered freeze tick from RoundStart
-	// Snapshots for retroactive phantom purge
-	tickSnapshot        int
-	shotSnapshot        int
-	damageSnapshot      int
-	killSnapshot        int
-	grenadeSnapshot     int
+	// Snapshots for retroactive phantom purge (file positions + counts)
+	snap                spillSnapshot
 	roundNumberSnapshot int
+}
+
+// spillers groups all five jsonlSpillers for passing around.
+type spillers struct {
+	ticks    *jsonlSpiller
+	shots    *jsonlSpiller
+	damages  *jsonlSpiller
+	kills    *jsonlSpiller
+	grenades *jsonlSpiller
+}
+
+func (sp *spillers) snapshot() spillSnapshot {
+	tp, tc := sp.ticks.Snapshot()
+	shp, shc := sp.shots.Snapshot()
+	dp, dc := sp.damages.Snapshot()
+	kp, kc := sp.kills.Snapshot()
+	gp, gc := sp.grenades.Snapshot()
+	return spillSnapshot{tp, tc, shp, shc, dp, dc, kp, kc, gp, gc}
+}
+
+func (sp *spillers) truncate(s spillSnapshot) {
+	sp.ticks.Truncate(s.tickPos, s.tickCount)
+	sp.shots.Truncate(s.shotPos, s.shotCount)
+	sp.damages.Truncate(s.dmgPos, s.dmgCount)
+	sp.kills.Truncate(s.killPos, s.killCount)
+	sp.grenades.Truncate(s.grenPos, s.grenCount)
 }
 
 // isKnifeRound checks if all alive players have only melee weapons.
@@ -55,8 +91,61 @@ func isKnifeRound(gs dem.GameState) bool {
 	return true
 }
 
+// tickBuffer keeps 1 tick in memory for merging before flushing to the spiller.
+type tickBuffer struct {
+	pending *TickData
+	spiller *jsonlSpiller
+}
+
+func (tb *tickBuffer) appendOrMerge(t TickData) {
+	if tb.pending == nil {
+		tb.pending = &t
+		return
+	}
+	if t.Tick > tb.pending.Tick {
+		// Flush previous tick to disk
+		tb.spiller.Append(*tb.pending)
+		tb.pending = &t
+	} else if t.Tick == tb.pending.Tick {
+		// Merge into pending (same logic as appendOrMergeTick)
+		tb.pending.IsRoundStart = tb.pending.IsRoundStart || t.IsRoundStart
+		tb.pending.IsRoundEnd = tb.pending.IsRoundEnd || t.IsRoundEnd
+		tb.pending.IsFreezeStart = tb.pending.IsFreezeStart || t.IsFreezeStart
+		if len(t.Players) > 0 {
+			tb.pending.Players = t.Players
+		}
+		if t.RoundNumber > 0 && tb.pending.RoundNumber == 0 {
+			tb.pending.RoundNumber = t.RoundNumber
+		}
+		if t.Winner != "" {
+			tb.pending.Winner = t.Winner
+		}
+		if len(t.Projectiles) > 0 {
+			tb.pending.Projectiles = t.Projectiles
+		}
+		if t.BombPlantTick != 0 {
+			tb.pending.BombPlantTick = t.BombPlantTick
+		}
+		if t.TeamCT != "" && tb.pending.TeamCT == "" {
+			tb.pending.TeamCT = t.TeamCT
+		}
+		if t.TeamT != "" && tb.pending.TeamT == "" {
+			tb.pending.TeamT = t.TeamT
+		}
+	}
+	// t.Tick < pending.Tick → ignore
+}
+
+// Flush writes the last pending tick to the spiller (call after parsing ends).
+func (tb *tickBuffer) Flush() {
+	if tb.pending != nil {
+		tb.spiller.Append(*tb.pending)
+		tb.pending = nil
+	}
+}
+
 // registerFrameHandler installs the FrameDone downsampling handler.
-func registerFrameHandler(p dem.Parser, result *ParseResult, bs *bombState, srs *skipRoundState) {
+func registerFrameHandler(p dem.Parser, result *ParseResult, bs *bombState, srs *skipRoundState, tb *tickBuffer) {
 	const downsampleRate = 8
 	lastDownsampleTick := -1
 
@@ -84,8 +173,6 @@ func registerFrameHandler(p dem.Parser, result *ParseResult, bs *bombState, srs 
 
 		// Fallback: detect bomb planted from state transition if BombPlanted event was missed
 		if bs.plantTick == 0 && bs.plantBeginTick > 0 && !bs.isPlanting {
-			// BombPlantBegin fired, isPlanting went false, but plantTick never set
-			// Estimate plant completion tick (~3.2s after begin)
 			tickRate := p.TickRate()
 			if tickRate <= 0 {
 				tickRate = 64
@@ -98,7 +185,6 @@ func registerFrameHandler(p dem.Parser, result *ParseResult, bs *bombState, srs 
 				bs.plantX = float64(pos.X)
 				bs.plantY = float64(pos.Y)
 			}
-			// Fallback position from planting player
 			if bs.plantX == 0 && bs.plantY == 0 {
 				bs.plantX = bs.plantBeginX
 				bs.plantY = bs.plantBeginY
@@ -160,13 +246,13 @@ func registerFrameHandler(p dem.Parser, result *ParseResult, bs *bombState, srs 
 		tickEntry.DroppedItems = collectDroppedItems(gs)
 
 		if len(tickEntry.Players) > 0 || len(tickEntry.Projectiles) > 0 {
-			appendOrMergeTick(&result.Ticks, tickEntry)
+			tb.appendOrMerge(tickEntry)
 		}
 	})
 }
 
 // registerEventHandlers installs all non-frame event handlers.
-func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, roundNumber *int, srs *skipRoundState) {
+func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, roundNumber *int, srs *skipRoundState, sp *spillers, tb *tickBuffer) {
 	// WeaponFire — muzzle flash
 	p.RegisterEventHandler(func(e events.WeaponFire) {
 		if srs.active {
@@ -183,7 +269,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 		if e.Weapon != nil {
 			weapon = e.Weapon.String()
 		}
-		result.Shots = append(result.Shots, ShotEvent{
+		sp.shots.Append(ShotEvent{
 			Tick:    p.GameState().IngameTick(),
 			Shooter: e.Shooter.Name,
 			Team:    playerTeamString(e.Shooter.Team),
@@ -207,7 +293,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 		if e.Attacker != nil {
 			attackerName = e.Attacker.Name
 		}
-		result.Damages = append(result.Damages, DamageEvent{
+		sp.damages.Append(DamageEvent{
 			Tick:         p.GameState().IngameTick(),
 			VictimName:   e.Player.Name,
 			AttackerName: attackerName,
@@ -241,7 +327,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			assisterName = e.Assister.Name
 			assisterTeam = playerTeamString(e.Assister.Team)
 		}
-		result.Kills = append(result.Kills, KillEvent{
+		sp.kills.Append(KillEvent{
 			Tick:          p.GameState().IngameTick(),
 			KillerName:    killerName,
 			KillerTeam:    killerTeam,
@@ -272,14 +358,11 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 	})
 
 	// Track the last tick where each attack button was pressed, per player.
-	// The throw animation has a delay (~10-25 ticks) between button release and
-	// projectile creation, so we can't just check the current or previous tick.
-	// Instead we check if the button was pressed within a recent window.
 	type buttonLastPress struct {
 		attackTick  int
 		attack2Tick int
 	}
-	attackHistory := make(map[uint64]*buttonLastPress) // steamID64 -> last press ticks
+	attackHistory := make(map[uint64]*buttonLastPress)
 	p.RegisterEventHandler(func(e events.FrameDone) {
 		tick := p.GameState().IngameTick()
 		for _, pl := range p.GameState().Participants().Playing() {
@@ -320,19 +403,13 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			throwerPitch = float64(proj.Thrower.ViewDirectionY())
 			vel := proj.Thrower.Velocity()
 			throwerSpeed = math.Sqrt(vel.X*vel.X + vel.Y*vel.Y)
-			// ButtonJump: hint only — TS does parabola check on Z positions for reliable detection
 			throwerAirborne = proj.Thrower.IsPressingButton(common.ButtonJump)
 			throwerCrouching = proj.Thrower.IsDucking()
-			// Check if attack buttons were pressed within a recent window (~64 ticks).
-			// The throw animation delays projectile creation by ~10-25 ticks after button release.
 			if h, ok := attackHistory[proj.Thrower.SteamID64]; ok {
 				tick := p.GameState().IngameTick()
 				throwerAttack = (tick - h.attackTick) < 64
 				throwerAttack2 = (tick - h.attack2Tick) < 64
 			}
-			// Pure throw velocity = projectile velocity minus player velocity
-			// Used to classify throw strength (left-click / right-click / both)
-			// Use PropertyValue (not PropertyValueMust) to avoid panic if property is missing
 			if projVelProp, exists := proj.Entity.PropertyValue("m_vecVelocity"); exists {
 				projVel := projVelProp.VectorVal
 				dx := projVel.X - vel.X
@@ -346,7 +423,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			grenType = grenadeTypeString(proj.WeaponInstance.Type)
 		}
 		projPos := proj.Position()
-		result.GrenadeEvents = append(result.GrenadeEvents, GrenadeEvent{
+		sp.grenades.Append(GrenadeEvent{
 			Type: grenType, Action: "throw", Tick: p.GameState().IngameTick(),
 			EntityID: int(proj.Entity.ID()), ThrowerName: throwerName, ThrowerTeam: throwerTeam,
 			X: projPos.X, Y: projPos.Y, Z: projPos.Z,
@@ -365,7 +442,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			throwerName = e.Thrower.Name
 			throwerTeam = playerTeamString(e.Thrower.Team)
 		}
-		result.GrenadeEvents = append(result.GrenadeEvents, GrenadeEvent{
+		sp.grenades.Append(GrenadeEvent{
 			Type: "smoke", Action: "start", Tick: p.GameState().IngameTick(),
 			EntityID: e.GrenadeEntityID, ThrowerName: throwerName, ThrowerTeam: throwerTeam,
 			X: e.Position.X, Y: e.Position.Y, Z: e.Position.Z,
@@ -379,7 +456,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			throwerName = e.Thrower.Name
 			throwerTeam = playerTeamString(e.Thrower.Team)
 		}
-		result.GrenadeEvents = append(result.GrenadeEvents, GrenadeEvent{
+		sp.grenades.Append(GrenadeEvent{
 			Type: "smoke", Action: "expired", Tick: p.GameState().IngameTick(),
 			EntityID: e.GrenadeEntityID, ThrowerName: throwerName, ThrowerTeam: throwerTeam,
 			X: e.Position.X, Y: e.Position.Y, Z: e.Position.Z,
@@ -394,7 +471,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			throwerName = e.Thrower.Name
 			throwerTeam = playerTeamString(e.Thrower.Team)
 		}
-		result.GrenadeEvents = append(result.GrenadeEvents, GrenadeEvent{
+		sp.grenades.Append(GrenadeEvent{
 			Type: "he", Action: "detonate", Tick: p.GameState().IngameTick(),
 			EntityID: e.GrenadeEntityID, ThrowerName: throwerName, ThrowerTeam: throwerTeam,
 			X: e.Position.X, Y: e.Position.Y, Z: e.Position.Z,
@@ -409,7 +486,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			throwerName = e.Thrower.Name
 			throwerTeam = playerTeamString(e.Thrower.Team)
 		}
-		result.GrenadeEvents = append(result.GrenadeEvents, GrenadeEvent{
+		sp.grenades.Append(GrenadeEvent{
 			Type: "flash", Action: "detonate", Tick: p.GameState().IngameTick(),
 			EntityID: e.GrenadeEntityID, ThrowerName: throwerName, ThrowerTeam: throwerTeam,
 			X: e.Position.X, Y: e.Position.Y, Z: e.Position.Z,
@@ -441,7 +518,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			y /= float64(len(fires))
 			z /= float64(len(fires))
 		}
-		result.GrenadeEvents = append(result.GrenadeEvents, GrenadeEvent{
+		sp.grenades.Append(GrenadeEvent{
 			Type: grenType, Action: "start", Tick: p.GameState().IngameTick(),
 			EntityID: int(e.Inferno.Entity.ID()), ThrowerName: throwerName, ThrowerTeam: throwerTeam,
 			X: x, Y: y, Z: z,
@@ -472,7 +549,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			y /= float64(len(fires))
 			z /= float64(len(fires))
 		}
-		result.GrenadeEvents = append(result.GrenadeEvents, GrenadeEvent{
+		sp.grenades.Append(GrenadeEvent{
 			Type: grenType, Action: "expired", Tick: p.GameState().IngameTick(),
 			EntityID: int(e.Inferno.Entity.ID()), ThrowerName: throwerName, ThrowerTeam: throwerTeam,
 			X: x, Y: y, Z: z,
@@ -487,7 +564,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			throwerName = e.Thrower.Name
 			throwerTeam = playerTeamString(e.Thrower.Team)
 		}
-		result.GrenadeEvents = append(result.GrenadeEvents, GrenadeEvent{
+		sp.grenades.Append(GrenadeEvent{
 			Type: "decoy", Action: "start", Tick: p.GameState().IngameTick(),
 			EntityID: e.GrenadeEntityID, ThrowerName: throwerName, ThrowerTeam: throwerTeam,
 			X: e.Position.X, Y: e.Position.Y, Z: e.Position.Z,
@@ -501,7 +578,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			throwerName = e.Thrower.Name
 			throwerTeam = playerTeamString(e.Thrower.Team)
 		}
-		result.GrenadeEvents = append(result.GrenadeEvents, GrenadeEvent{
+		sp.grenades.Append(GrenadeEvent{
 			Type: "decoy", Action: "expired", Tick: p.GameState().IngameTick(),
 			EntityID: e.GrenadeEntityID, ThrowerName: throwerName, ThrowerTeam: throwerTeam,
 			X: e.Position.X, Y: e.Position.Y, Z: e.Position.Z,
@@ -526,7 +603,6 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 		bombPos := gs.Bomb().Position()
 		bs.plantX = float64(bombPos.X)
 		bs.plantY = float64(bombPos.Y)
-		// Fallback: if bomb position is (0,0), use planting player's position
 		if bs.plantX == 0 && bs.plantY == 0 && e.Player != nil {
 			pos := e.Player.Position()
 			bs.plantX = pos.X
@@ -589,7 +665,6 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 		bs.plantBeginX = 0
 		bs.plantBeginY = 0
 		srs.inFreeze = true
-		// Buffer the freeze tick — used for knife/phantom detection signals
 		gs := p.GameState()
 		ft := TickData{
 			Tick:          gs.IngameTick(),
@@ -607,11 +682,9 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 		// Retroactive phantom purge: round started after knife but never got a RoundEnd
 		if srs.phantomPossible && *roundNumber > 0 {
 			srs.phantomPossible = false
-			result.Ticks = result.Ticks[:srs.tickSnapshot]
-			result.Shots = result.Shots[:srs.shotSnapshot]
-			result.Damages = result.Damages[:srs.damageSnapshot]
-			result.Kills = result.Kills[:srs.killSnapshot]
-			result.GrenadeEvents = result.GrenadeEvents[:srs.grenadeSnapshot]
+			// Flush pending tick before truncating
+			tb.Flush()
+			sp.truncate(srs.snap)
 			*roundNumber = srs.roundNumberSnapshot
 			if srs.pendingFreeze != nil {
 				srs.pendingFreeze.RoundNumber = *roundNumber + 1
@@ -626,7 +699,6 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			return
 		}
 
-		// Clear buffered freeze tick (no longer emitted — freeze frames are skipped entirely)
 		srs.pendingFreeze = nil
 
 		*roundNumber++
@@ -649,20 +721,17 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			}
 		}
 		if len(spawnTick.Players) > 0 {
-			appendOrMergeTick(&result.Ticks, spawnTick)
+			tb.appendOrMerge(spawnTick)
 		}
 	})
 
 	p.RegisterEventHandler(func(e events.RoundEnd) {
 		if srs.active {
 			if srs.isKnifeSkip {
-				// After knife round: record snapshots for potential phantom purge
+				// After knife round: flush pending tick and record snapshot for potential phantom purge
+				tb.Flush()
 				srs.phantomPossible = true
-				srs.tickSnapshot = len(result.Ticks)
-				srs.shotSnapshot = len(result.Shots)
-				srs.damageSnapshot = len(result.Damages)
-				srs.killSnapshot = len(result.Kills)
-				srs.grenadeSnapshot = len(result.GrenadeEvents)
+				srs.snap = sp.snapshot()
 				srs.roundNumberSnapshot = *roundNumber
 			}
 			srs.active = false
@@ -678,20 +747,16 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			winner = "T"
 		}
 
-		// Retroactive phantom detection: round after knife with no winner = phantom
+		// Retroactive phantom detection
 		if srs.phantomPossible {
 			srs.phantomPossible = false
 			if winner == "" {
-				// Phantom confirmed: purge all data emitted during this round
-				result.Ticks = result.Ticks[:srs.tickSnapshot]
-				result.Shots = result.Shots[:srs.shotSnapshot]
-				result.Damages = result.Damages[:srs.damageSnapshot]
-				result.Kills = result.Kills[:srs.killSnapshot]
-				result.GrenadeEvents = result.GrenadeEvents[:srs.grenadeSnapshot]
+				// Phantom confirmed: flush and purge
+				tb.Flush()
+				sp.truncate(srs.snap)
 				*roundNumber = srs.roundNumberSnapshot
 				return
 			}
-			// winner CT/T = real round, keep data and continue normally
 		}
 
 		endTick := TickData{
@@ -720,6 +785,6 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 				endTick.Players = append(endTick.Players, playerToPosition(player, "T"))
 			}
 		}
-		appendOrMergeTick(&result.Ticks, endTick)
+		tb.appendOrMerge(endTick)
 	})
 }

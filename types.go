@@ -139,17 +139,15 @@ type TickData struct {
 	ScoreT             int              `json:"scoreT,omitempty"`
 }
 
-// ParseResult is the top-level JSON output written to stdout.
+// ParseResult holds the scalar fields of the output JSON.
+// Large arrays (ticks, shots, damages, grenadeEvents, kills) are written
+// via jsonlSpiller temp files and streamed directly to stdout to avoid
+// holding everything in memory during parsing.
 type ParseResult struct {
-	Success       bool           `json:"success"`
-	Error         string         `json:"error,omitempty"`
-	MapName       string         `json:"mapName"`
-	ServerName    string         `json:"serverName,omitempty"`
-	TickRate      int            `json:"tickRate"`
-	Stats         []PlayerStats  `json:"stats"`
-	Ticks         []TickData     `json:"ticks"`
-	Shots         []ShotEvent    `json:"shots"`
-	Damages       []DamageEvent  `json:"damages"`
-	GrenadeEvents []GrenadeEvent `json:"grenadeEvents"`
-	Kills         []KillEvent    `json:"kills"`
+	Success    bool          `json:"success"`
+	Error      string        `json:"error,omitempty"`
+	MapName    string        `json:"mapName"`
+	ServerName string        `json:"serverName,omitempty"`
+	TickRate   int           `json:"tickRate"`
+	Stats      []PlayerStats `json:"stats"`
 }
