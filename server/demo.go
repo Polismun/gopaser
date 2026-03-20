@@ -247,7 +247,8 @@ func handleDemoDelete(w http.ResponseWriter, r *http.Request, id string) {
 	w.Write([]byte("ok"))
 }
 
-// POST /cleanup-orphans — admin-only, deletes VPS demo files with no Firestore DemoDoc
+// POST /cleanup-orphans — admin-only, deletes VPS demo files with no Firestore DemoDoc.
+// Query param ?dryRun=true lists orphans without deleting them.
 func handleCleanupOrphans(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 	if r.Method == http.MethodOptions {
@@ -277,6 +278,8 @@ func handleCleanupOrphans(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	dryRun := r.URL.Query().Get("dryRun") == "true"
+
 	entries, err := os.ReadDir(demosDir)
 	if err != nil {
 		http.Error(w, "Failed to list demos", http.StatusInternalServerError)
@@ -299,10 +302,15 @@ func handleCleanupOrphans(w http.ResponseWriter, r *http.Request) {
 		// Check if DemoDoc exists via verify-demo-read (no auth → 404 if missing, 403 if private)
 		status, _ := verifyDemoRead(id, "")
 		if status == http.StatusNotFound {
-			path := filepath.Join(demosDir, name)
-			if err := os.Remove(path); err == nil {
+			if dryRun {
 				deleted = append(deleted, id)
-				log.Printf("[cleanup-orphans] Deleted orphan: %s", id)
+				log.Printf("[cleanup-orphans] Would delete orphan: %s (dry-run)", id)
+			} else {
+				path := filepath.Join(demosDir, name)
+				if err := os.Remove(path); err == nil {
+					deleted = append(deleted, id)
+					log.Printf("[cleanup-orphans] Deleted orphan: %s", id)
+				}
 			}
 		} else {
 			kept++
@@ -313,5 +321,6 @@ func handleCleanupOrphans(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"deleted": deleted,
 		"kept":    kept,
+		"dryRun":  dryRun,
 	})
 }

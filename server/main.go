@@ -16,6 +16,9 @@ import (
 // verifyURL is set once at startup; empty only if DEV_MODE=true
 var verifyURL string
 
+// verifyClient is used for all auth/verify HTTP calls (with timeout to avoid hanging).
+var verifyClient = &http.Client{Timeout: 10 * time.Second}
+
 // --- Rate limiter (sliding window, 10 req/min per IP) ---
 
 type rateLimiter struct {
@@ -135,7 +138,7 @@ func verifyAuthAt(authHeader string, apiPath string) (int, error) {
 	}
 	req.Header.Set("Authorization", authHeader)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := verifyClient.Do(req)
 	if err != nil {
 		return http.StatusBadGateway, fmt.Errorf("auth service unreachable")
 	}
@@ -211,7 +214,7 @@ func verifyDemoRead(demoId, authHeader string) (int, error) {
 		req.Header.Set("Authorization", authHeader)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := verifyClient.Do(req)
 	if err != nil {
 		return http.StatusBadGateway, fmt.Errorf("demo read auth service unreachable")
 	}
@@ -254,7 +257,7 @@ func verifyDemoDelete(demoId, authHeader string) (int, bool, error) {
 	req.Header.Set("X-Demo-Id", demoId)
 	req.Header.Set("Authorization", authHeader)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := verifyClient.Do(req)
 	if err != nil {
 		return http.StatusBadGateway, false, fmt.Errorf("demo delete auth service unreachable")
 	}
@@ -296,7 +299,7 @@ func verifyMediaDelete(stratId, authHeader string) (int, error) {
 	req.Header.Set("X-Strat-Id", stratId)
 	req.Header.Set("Authorization", authHeader)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := verifyClient.Do(req)
 	if err != nil {
 		return http.StatusBadGateway, fmt.Errorf("media delete auth service unreachable")
 	}
