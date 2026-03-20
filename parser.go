@@ -79,7 +79,9 @@ func main() {
 
 	tb := &tickBuffer{spiller: tickSp}
 
-	p := dem.NewParser(reader)
+	p := dem.NewParserWithConfig(reader, dem.ParserConfig{
+		MsgQueueBufferSize: 0, // sequential parsing to minimize memory
+	})
 
 	header, err := p.ParseHeader()
 	if err != nil {
