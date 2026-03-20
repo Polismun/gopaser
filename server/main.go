@@ -36,13 +36,13 @@ var readLimiter = &rateLimiter{requests: make(map[string][]time.Time), max: rate
 const (
 	rateWindow       = time.Minute
 	rateMaxDefault   = 10
-	maxBodyBytes     = 1 << 30   // 1 GB
+	maxBodyBytes     = 3 << 30   // 3 GB (BO5 .rar can be 1.5-2 GB)
 	maxConcurrent    = 1         // max simultaneous parsers (RAM safety: ~7 GB per parse on 8 GB VPS)
 	queueTimeout     = 5 * time.Minute // max wait time in parsing queue (large demos need more time)
 	maxDemoSaveBytes = 200 << 20 // 200 MB for parsed JSON
 	rateMaxRead          = 60        // 60 req/min per IP for demo reads
 	demosDir             = "demos"
-	maxDecompressedBytes int64 = 2 << 30     // 2 GB decompressed limit (RAR bomb protection)
+	maxDecompressedBytes int64 = 5 << 30     // 5 GB decompressed limit (BO5: 5 × ~800 MB .dem)
 )
 
 // Semaphore limits concurrent parser processes
