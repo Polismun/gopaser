@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"time"
 
 	dem "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs"
 	events "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs/events"
@@ -109,6 +110,25 @@ func main() {
 	registerFrameHandler(p, &result, bs, srs, tb)
 	registerEventHandlers(p, &result, bs, &roundNumber, srs, sp, tb)
 
+	// Memory monitoring goroutine — logs to stderr every 5s during parsing
+	memDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				fmt.Fprintf(os.Stderr, "[mem] heap=%dMB sys=%dMB alloc=%dMB ticks=%d shots=%d\n",
+					m.HeapInuse/(1024*1024), m.Sys/(1024*1024), m.Alloc/(1024*1024),
+					tickSp.Count(), shotSp.Count())
+			case <-memDone:
+				return
+			}
+		}
+	}()
+
 	if err := p.ParseToEnd(); err != nil {
 		outputError(fmt.Sprintf("Erreur lors du parsing: %v", err))
 		return
@@ -138,9 +158,17 @@ func main() {
 		})
 	}
 
-	// Free demoinfocs library state (~7 GB) BEFORE JSON output
+	// Stop memory monitoring
+	close(memDone)
+
+	// Free demoinfocs library state BEFORE JSON output
 	p.Close()
 	runtime.GC()
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	fmt.Fprintf(os.Stderr, "[mem] after GC: heap=%dMB sys=%dMB alloc=%dMB\n",
+		m.HeapInuse/(1024*1024), m.Sys/(1024*1024), m.Alloc/(1024*1024))
 
 	// Stream JSON to stdout: manually assemble the top-level object
 	// so that large arrays are streamed from temp files, not from memory.

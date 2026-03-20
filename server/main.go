@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -161,8 +162,10 @@ func verifyAuth(authHeader string) (int, error) {
 }
 
 func clientIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-		return ip
+	if ips := r.Header.Get("X-Forwarded-For"); ips != "" {
+		// Take last IP in chain (added by the trusted reverse proxy, e.g. Caddy)
+		parts := strings.Split(ips, ",")
+		return strings.TrimSpace(parts[len(parts)-1])
 	}
 	return r.RemoteAddr
 }

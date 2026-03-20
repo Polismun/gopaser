@@ -251,14 +251,14 @@ func handleCleanupOrphans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Admin auth via verify-upload (reuses existing admin check)
+	// Admin auth via verify-admin (checks isAdmin, not just canUploadDemos)
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" && verifyURL != "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if verifyURL != "" {
-		status, err := verifyAuthAt(authHeader, verifyURL+"/api/verify-upload")
+		status, err := verifyAuthAt(authHeader, "/api/verify-admin")
 		if status != http.StatusOK {
 			msg := "Unauthorized"
 			if err != nil {

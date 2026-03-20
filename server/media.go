@@ -258,6 +258,8 @@ func handleMediaGet(w http.ResponseWriter, _ *http.Request, category, id string)
 
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'")
 	io.Copy(w, f)
 }
 
