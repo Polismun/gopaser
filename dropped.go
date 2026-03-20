@@ -1,8 +1,8 @@
 package main
 
 import (
-	common "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs/common"
-	dem "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs"
+	common "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/common"
+	dem "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs"
 )
 
 // collectDroppedItems returns all weapons/grenades lying on the ground (Owner == nil).

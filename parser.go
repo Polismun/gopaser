@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"time"
 
-	dem "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs"
-	events "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs/events"
+	dem "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs"
+	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/msg"
 )
 
 func main() {
@@ -83,25 +83,18 @@ func main() {
 		MsgQueueBufferSize: 0, // sequential parsing to minimize memory
 	})
 
-	header, err := p.ParseHeader()
-	if err != nil {
-		outputError(fmt.Sprintf("Erreur lors du parsing du header: %v", err))
-		return
-	}
-
 	result := ParseResult{
-		Success:    true,
-		MapName:    header.MapName,
-		ServerName: header.ServerName,
-		TickRate:   int(p.TickRate()),
-		Stats:      []PlayerStats{},
+		Success: true,
+		Stats:   []PlayerStats{},
 	}
 
-	p.RegisterEventHandler(func(e events.MatchStart) {
-		if result.MapName == "" || result.MapName == "unknown" {
-			if h, err := p.ParseHeader(); err == nil && h.MapName != "" {
-				result.MapName = h.MapName
-			}
+	// v5: ParseHeader() removed — capture header via net-message handler
+	p.RegisterNetMessageHandler(func(h *msg.CDemoFileHeader) {
+		if m := h.GetMapName(); m != "" {
+			result.MapName = m
+		}
+		if s := h.GetServerName(); s != "" {
+			result.ServerName = s
 		}
 	})
 
@@ -144,6 +137,9 @@ func main() {
 
 	// Flush last pending tick
 	tb.Flush()
+
+	// TickRate available after parsing
+	result.TickRate = int(p.TickRate())
 
 	// Extract final KDA stats
 	for _, player := range p.GameState().Participants().All() {

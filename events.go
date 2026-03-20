@@ -3,9 +3,10 @@ package main
 import (
 	"math"
 
-	common "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs/common"
-	dem "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs"
-	events "github.com/markus-wa/demoinfocs-golang/v4/pkg/demoinfocs/events"
+	"github.com/golang/geo/r3"
+	common "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/common"
+	dem "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs"
+	events "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/events"
 )
 
 // bombState holds all mutable bomb/plant/defuse state shared across event handlers.
@@ -151,12 +152,6 @@ func registerFrameHandler(p dem.Parser, result *ParseResult, bs *bombState, srs 
 
 	p.RegisterEventHandler(func(e events.FrameDone) {
 		gs := p.GameState()
-
-		if result.MapName == "" || result.MapName == "unknown" {
-			if h := p.Header(); h.MapName != "" && h.MapName != "unknown" {
-				result.MapName = h.MapName
-			}
-		}
 
 		if srs.active || srs.inFreeze {
 			return
@@ -403,7 +398,13 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			throwerZ = pos.Z
 			throwerYaw = float64(proj.Thrower.ViewDirectionX())
 			throwerPitch = float64(proj.Thrower.ViewDirectionY())
-			vel := proj.Thrower.Velocity()
+			// v5: Velocity() removed — read from pawn entity property
+			var vel r3.Vector
+			if pawn := proj.Thrower.PlayerPawnEntity(); pawn != nil {
+				if velProp, exists := pawn.PropertyValue("m_vecVelocity"); exists {
+					vel = velProp.R3Vec()
+				}
+			}
 			throwerSpeed = math.Sqrt(vel.X*vel.X + vel.Y*vel.Y)
 			throwerAirborne = proj.Thrower.IsPressingButton(common.ButtonJump)
 			throwerCrouching = proj.Thrower.IsDucking()
@@ -413,7 +414,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 				throwerAttack2 = (tick - h.attack2Tick) < 64
 			}
 			if projVelProp, exists := proj.Entity.PropertyValue("m_vecVelocity"); exists {
-				projVel := projVelProp.VectorVal
+				projVel := projVelProp.R3Vec()
 				dx := projVel.X - vel.X
 				dy := projVel.Y - vel.Y
 				dz := projVel.Z - vel.Z
