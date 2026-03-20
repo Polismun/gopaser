@@ -214,13 +214,21 @@ func handleDemoDelete(w http.ResponseWriter, r *http.Request, id string) {
 	}
 
 	// Verify ownership via Vercel /api/verify-demo-delete
-	status, err := verifyDemoDelete(id, authHeader)
+	status, keepFile, err := verifyDemoDelete(id, authHeader)
 	if status != http.StatusOK {
 		errMsg := "Unauthorized"
 		if err != nil {
 			errMsg = err.Error()
 		}
 		http.Error(w, errMsg, status)
+		return
+	}
+
+	// If other DemoDocs still reference this VPS file, keep it on disk
+	if keepFile {
+		log.Printf("Demo delete skipped (shared file): %s", id)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
 		return
 	}
 

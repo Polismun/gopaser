@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -239,36 +240,47 @@ func verifyDemoRead(demoId, authHeader string) (int, error) {
 }
 
 // verifyDemoDelete checks whether a demo can be deleted by calling /api/verify-demo-delete.
-func verifyDemoDelete(demoId, authHeader string) (int, error) {
+// Returns (status, keepFile, error). keepFile=true means other DemoDocs still reference
+// this VPS file, so the file should NOT be deleted from disk.
+func verifyDemoDelete(demoId, authHeader string) (int, bool, error) {
 	if verifyURL == "" {
-		return http.StatusOK, nil // DEV_MODE only
+		return http.StatusOK, false, nil // DEV_MODE only
 	}
 
 	req, err := http.NewRequest("POST", verifyURL+"/api/verify-demo-delete", nil)
 	if err != nil {
-		return http.StatusInternalServerError, err
+		return http.StatusInternalServerError, false, err
 	}
 	req.Header.Set("X-Demo-Id", demoId)
 	req.Header.Set("Authorization", authHeader)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return http.StatusBadGateway, fmt.Errorf("demo delete auth service unreachable")
+		return http.StatusBadGateway, false, fmt.Errorf("demo delete auth service unreachable")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		switch resp.StatusCode {
 		case http.StatusUnauthorized:
-			return resp.StatusCode, fmt.Errorf("unauthorized")
+			return resp.StatusCode, false, fmt.Errorf("unauthorized")
 		case http.StatusForbidden:
-			return resp.StatusCode, fmt.Errorf("forbidden: not the owner")
+			return resp.StatusCode, false, fmt.Errorf("forbidden: not the owner")
 		default:
-			return resp.StatusCode, fmt.Errorf("demo delete check failed")
+			return resp.StatusCode, false, fmt.Errorf("demo delete check failed")
 		}
 	}
 
-	return http.StatusOK, nil
+	// Parse keepFile from response body
+	var body struct {
+		KeepFile bool `json:"keepFile"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		// If body parsing fails, default to not keeping the file (backward compat)
+		return http.StatusOK, false, nil
+	}
+
+	return http.StatusOK, body.KeepFile, nil
 }
 
 // verifyMediaDelete checks whether a media file can be deleted by calling /api/verify-media-delete.
