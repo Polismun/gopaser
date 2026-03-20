@@ -131,6 +131,7 @@ type TickData struct {
 	BombPlantTick      int              `json:"bombPlantTick,omitempty"`
 	BombPlantX         float64          `json:"bombPlantX"`
 	BombPlantY         float64          `json:"bombPlantY"`
+	BombPlantZ         float64          `json:"bombPlantZ"`
 	IsPlanting         bool             `json:"isPlanting,omitempty"`
 	IsDefusing         bool             `json:"isDefusing,omitempty"`
 	PlantingPlayerName string           `json:"plantingPlayerName,omitempty"`

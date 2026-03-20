@@ -10,8 +10,8 @@ import (
 
 // bombState holds all mutable bomb/plant/defuse state shared across event handlers.
 type bombState struct {
-	plantTick      int
-	plantX, plantY float64
+	plantTick          int
+	plantX, plantY, plantZ float64
 	isPlanting     bool
 	isDefusing     bool
 	plantingPlayer string
@@ -184,6 +184,7 @@ func registerFrameHandler(p dem.Parser, result *ParseResult, bs *bombState, srs 
 				pos := bomb.Position()
 				bs.plantX = float64(pos.X)
 				bs.plantY = float64(pos.Y)
+				bs.plantZ = float64(pos.Z)
 			}
 			if bs.plantX == 0 && bs.plantY == 0 {
 				bs.plantX = bs.plantBeginX
@@ -199,6 +200,7 @@ func registerFrameHandler(p dem.Parser, result *ParseResult, bs *bombState, srs 
 			BombPlantTick:      bs.plantTick,
 			BombPlantX:         bs.plantX,
 			BombPlantY:         bs.plantY,
+			BombPlantZ:         bs.plantZ,
 			IsPlanting:         bs.isPlanting,
 			IsDefusing:         bs.isDefusing,
 			PlantingPlayerName: bs.plantingPlayer,
@@ -603,10 +605,12 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 		bombPos := gs.Bomb().Position()
 		bs.plantX = float64(bombPos.X)
 		bs.plantY = float64(bombPos.Y)
+		bs.plantZ = float64(bombPos.Z)
 		if bs.plantX == 0 && bs.plantY == 0 && e.Player != nil {
 			pos := e.Player.Position()
 			bs.plantX = pos.X
 			bs.plantY = pos.Y
+			bs.plantZ = pos.Z
 		}
 		bs.isPlanting = false
 		bs.plantingPlayer = ""
@@ -770,6 +774,7 @@ func registerEventHandlers(p dem.Parser, result *ParseResult, bs *bombState, rou
 			BombPlantTick:      bs.plantTick,
 			BombPlantX:         bs.plantX,
 			BombPlantY:         bs.plantY,
+			BombPlantZ:         bs.plantZ,
 			IsPlanting:         bs.isPlanting,
 			IsDefusing:         bs.isDefusing,
 			PlantingPlayerName: bs.plantingPlayer,
