@@ -110,7 +110,8 @@ func main() {
 	registerFrameHandler(p, &result, bs, srs, tb)
 	registerEventHandlers(p, &result, bs, &roundNumber, srs, sp, tb)
 
-	// Memory monitoring goroutine — logs to stderr every 5s during parsing
+	// Memory monitoring goroutine — writes to /tmp/parser-mem.log every 5s
+	memLog, _ := os.Create("/tmp/parser-mem.log")
 	memDone := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -120,9 +121,14 @@ func main() {
 			case <-ticker.C:
 				var m runtime.MemStats
 				runtime.ReadMemStats(&m)
-				fmt.Fprintf(os.Stderr, "[mem] heap=%dMB sys=%dMB alloc=%dMB ticks=%d shots=%d\n",
+				line := fmt.Sprintf("[mem] heap=%dMB sys=%dMB alloc=%dMB ticks=%d shots=%d\n",
 					m.HeapInuse/(1024*1024), m.Sys/(1024*1024), m.Alloc/(1024*1024),
 					tickSp.Count(), shotSp.Count())
+				fmt.Fprint(os.Stderr, line)
+				if memLog != nil {
+					memLog.WriteString(line)
+					memLog.Sync()
+				}
 			case <-memDone:
 				return
 			}
@@ -160,6 +166,9 @@ func main() {
 
 	// Stop memory monitoring
 	close(memDone)
+	if memLog != nil {
+		memLog.Close()
+	}
 
 	// Free demoinfocs library state BEFORE JSON output
 	p.Close()
