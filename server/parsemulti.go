@@ -113,27 +113,33 @@ func handleParseMulti(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Phase 2: Wait in queue for parser slot ---
-
-	queueWaiting.Add(1)
-	ctx, cancel := context.WithTimeout(r.Context(), queueTimeout)
-	defer cancel()
-
-	select {
-	case parseSem <- struct{}{}:
-		queueWaiting.Add(-1)
-		defer func() { <-parseSem }()
-	case <-ctx.Done():
-		queueWaiting.Add(-1)
-		http.Error(w, `{"error":"queue_timeout","message":"Server busy, queue timed out"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	// --- Phase 3: Parse each .dem + save ---
+	// --- Phase 2+3: Parse each .dem + save (interleaved — release semaphore between demos) ---
 
 	var results []parsedDemo
 	for _, dem := range dems {
+		// Acquire semaphore per demo (allows /parse requests to interleave)
+		queueWaiting.Add(1)
+		ctx, cancel := context.WithTimeout(r.Context(), queueTimeout)
+
+		select {
+		case parseSem <- struct{}{}:
+			queueWaiting.Add(-1)
+		case <-ctx.Done():
+			queueWaiting.Add(-1)
+			cancel()
+			// Return partial results if we have any
+			if len(results) > 0 {
+				log.Printf("[parse-multi] Queue timeout after %d/%d demos, returning partial results", len(results), len(dems))
+				goto respond
+			}
+			http.Error(w, `{"error":"queue_timeout","message":"Server busy, queue timed out"}`, http.StatusServiceUnavailable)
+			return
+		}
+		cancel()
+
 		result, err := parseAndSave(dem)
+		<-parseSem // Release immediately after this demo
+
 		if err != nil {
 			log.Printf("[parse-multi] failed to parse %s: %v", dem.name, err)
 			continue
@@ -142,6 +148,7 @@ func handleParseMulti(w http.ResponseWriter, r *http.Request) {
 		os.Remove(dem.path)
 	}
 
+respond:
 	if len(results) == 0 {
 		http.Error(w, "All demos failed to parse", http.StatusInternalServerError)
 		return
@@ -226,6 +233,13 @@ func parseAndSave(dem extractedDem) (parsedDemo, error) {
 		return parsedDemo{}, fmt.Errorf("parser error: %v | stderr: %s", err, string(stderrBytes))
 	}
 	outTmp.Close()
+
+	// Log peak memory from parser stderr (e.g. "peak_heap_bytes=1234567")
+	for _, line := range strings.Split(string(stderrBytes), "\n") {
+		if strings.HasPrefix(line, "peak_heap_bytes=") {
+			log.Printf("[parse-multi] %s: %s", dem.name, line)
+		}
+	}
 
 	// Gzip the parsed JSON to demos/{uuid}.json.gz
 	id := generateUUID()

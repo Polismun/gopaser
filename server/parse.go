@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -134,6 +135,13 @@ func handleParse(w http.ResponseWriter, r *http.Request) {
 
 	if err := cmd.Wait(); err != nil {
 		log.Printf("Parser error: %v | stderr: %s", err, string(stderrBytes))
+	}
+
+	// Log peak memory from parser stderr
+	for _, line := range strings.Split(string(stderrBytes), "\n") {
+		if strings.HasPrefix(line, "peak_heap_bytes=") {
+			log.Printf("[parse] %s", line)
+		}
 	}
 }
 

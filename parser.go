@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"sync/atomic"
+	"time"
 
 	dem "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs"
 	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/msg"
@@ -102,10 +104,40 @@ func main() {
 	registerFrameHandler(p, &result, bs, srs, tb)
 	registerEventHandlers(p, &result, bs, &roundNumber, srs, sp, tb)
 
+	// Track peak memory during parsing (logged to stderr for diagnostics)
+	var peakHeap atomic.Uint64
+	memDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				if m.HeapInuse > peakHeap.Load() {
+					peakHeap.Store(m.HeapInuse)
+				}
+			case <-memDone:
+				return
+			}
+		}
+	}()
+
 	if err := p.ParseToEnd(); err != nil {
+		close(memDone)
 		outputError(fmt.Sprintf("Erreur lors du parsing: %v", err))
 		return
 	}
+	close(memDone)
+
+	// Final sample after parsing
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	if m.HeapInuse > peakHeap.Load() {
+		peakHeap.Store(m.HeapInuse)
+	}
+	fmt.Fprintf(os.Stderr, "peak_heap_bytes=%d\n", peakHeap.Load())
 
 	// Flush last pending tick
 	tb.Flush()
