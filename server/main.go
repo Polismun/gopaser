@@ -32,17 +32,16 @@ var limiter = &rateLimiter{requests: make(map[string][]time.Time), max: rateMaxD
 // Separate rate limiter for demo reads (higher limit — reads are more frequent)
 var readLimiter = &rateLimiter{requests: make(map[string][]time.Time), max: rateMaxRead}
 
-
 const (
-	rateWindow       = time.Minute
-	rateMaxDefault   = 10
-	maxBodyBytes     = 3 << 30   // 3 GB (BO5 .rar can be 1.5-2 GB)
-	maxConcurrent    = 1         // max simultaneous parsers (RAM safety — peak unknown with v5, benchmark needed)
-	queueTimeout     = 5 * time.Minute // max wait time in parsing queue (large demos need more time)
-	maxDemoSaveBytes = 200 << 20 // 200 MB for parsed JSON
-	rateMaxRead          = 60        // 60 req/min per IP for demo reads
-	demosDir             = "demos"
-	maxDecompressedBytes int64 = 5 << 30     // 5 GB decompressed limit (BO5: 5 × ~800 MB .dem)
+	rateWindow                 = time.Minute
+	rateMaxDefault             = 10
+	maxBodyBytes               = 3 << 30         // 3 GB (BO5 .rar can be 1.5-2 GB)
+	maxConcurrent              = 2               // ~68 MB peak heap per parse (v5 + spiller fix) — RAM not the bottleneck anymore
+	queueTimeout               = 5 * time.Minute // max wait time in parsing queue (large demos need more time)
+	maxDemoSaveBytes           = 200 << 20       // 200 MB for parsed JSON
+	rateMaxRead                = 60              // 60 req/min per IP for demo reads
+	demosDir                   = "demos"
+	maxDecompressedBytes int64 = 5 << 30 // 5 GB decompressed limit (BO5: 5 × ~800 MB .dem)
 )
 
 // Semaphore limits concurrent parser processes
