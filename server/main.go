@@ -101,6 +101,7 @@ func main() {
 
 	http.HandleFunc("/parse-multi", handleParseMulti)
 	http.HandleFunc("/parse", handleParse)
+	http.HandleFunc("/steam/fetch-parse", handleSteamFetchParse)
 	http.HandleFunc("/demo/save", handleDemoSave)
 	http.HandleFunc("/demo/", handleDemoRoute)
 	http.HandleFunc("/media/save", handleMediaSave)
