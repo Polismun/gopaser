@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"sync"
+
 	"cloud.google.com/go/firestore"
 	"cs2-parser-server/stats"
 )
@@ -23,6 +25,9 @@ const (
 	maxFailedSharecodes  = 20
 	gcBotSyncTimeout     = 20 * time.Second
 )
+
+// Per-user sync mutex — prevents concurrent syncs for the same uid.
+var activeSyncs sync.Map
 
 // Retryable error codes — sharecode persisted for next sync.
 var retryableCodes = map[string]bool{
@@ -79,6 +84,15 @@ func handleSteamSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
+
+	// Per-user mutex: reject if a sync is already running for this uid.
+	if _, loaded := activeSyncs.LoadOrStore(req.UID, true); loaded {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]interface{}{"already_syncing": true})
+		return
+	}
+	defer activeSyncs.Delete(req.UID)
 
 	fs := getFirestoreClient()
 	if fs == nil {
