@@ -341,7 +341,7 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 		if s.Name == "" {
 			continue
 		}
-		accountID := uint64(0)
+		accountID := int64(0)
 		if s.SteamID != "" {
 			accountID = steamID64ToAccountID(s.SteamID)
 		}
@@ -571,7 +571,7 @@ type gcBotResult struct {
 }
 
 type gcBotPlayer struct {
-	AccountID  uint64 `json:"accountId"`
+	AccountID  int64  `json:"accountId"`
 	Kills      int    `json:"kills"`
 	Deaths     int    `json:"deaths"`
 	Assists    int    `json:"assists"`
@@ -654,7 +654,7 @@ func extractPlayersFromMeta(meta map[string]interface{}) []playerEnrichment {
 			continue
 		}
 		sid := strVal(p, "steamId")
-		accountID := uint64(0)
+		accountID := int64(0)
 		if sid != "" {
 			accountID = steamID64ToAccountID(sid)
 		}
@@ -681,7 +681,7 @@ func buildMatchPlayersFromMeta(meta map[string]interface{}) []MatchPlayer {
 			continue
 		}
 		sid := strVal(p, "steamId")
-		accountID := uint64(0)
+		accountID := int64(0)
 		if sid != "" {
 			accountID = steamID64ToAccountID(sid)
 		}

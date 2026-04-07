@@ -132,15 +132,15 @@ func fetchPlayerNames(steamIDs []string) map[string]string {
 }
 
 // accountIDToSteamID64 converts a SteamID32 (account_id) to SteamID64.
-const steamIDBase uint64 = 76561197960265728
+const steamIDBase int64 = 76561197960265728
 
-func accountIDToSteamID64(accountID uint64) string {
+func accountIDToSteamID64(accountID int64) string {
 	return fmt.Sprintf("%d", accountID+steamIDBase)
 }
 
 // steamID64ToAccountID converts a SteamID64 to SteamID32 (account_id).
-func steamID64ToAccountID(steamID64 string) uint64 {
-	var id uint64
+func steamID64ToAccountID(steamID64 string) int64 {
+	var id int64
 	fmt.Sscanf(steamID64, "%d", &id)
 	if id > steamIDBase {
 		return id - steamIDBase

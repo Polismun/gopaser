@@ -10,7 +10,7 @@ import (
 
 // MatchPlayer mirrors the TS MatchPlayer type.
 type MatchPlayer struct {
-	AccountID  uint64  `firestore:"accountId" json:"accountId"`
+	AccountID  int64   `firestore:"accountId" json:"accountId"`
 	Team       string  `firestore:"team" json:"team"`
 	Name       string  `firestore:"name,omitempty" json:"name,omitempty"`
 	Kills      int     `firestore:"kills" json:"kills"`
@@ -113,7 +113,7 @@ type matchEnrichment struct {
 }
 
 type playerEnrichment struct {
-	AccountID  uint64
+	AccountID  int64
 	Name       string
 	RankID     int
 	RankType   int
