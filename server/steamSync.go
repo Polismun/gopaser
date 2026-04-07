@@ -127,6 +127,7 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 				code = "STEAM_API_429"
 				hardStop = true
 			}
+			log.Printf("[steam-sync] discovery error: %s: %s", code, detail)
 			errors = append(errors, syncErrEntry{Code: code, Detail: detail})
 			if !hardStop {
 				break
@@ -151,6 +152,7 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 			if strings.Contains(err.Error(), ":") {
 				errCode = strings.SplitN(err.Error(), ":", 2)[0]
 			}
+			log.Printf("[steam-sync] sharecode %s failed: %s: %s", code, errCode, err.Error())
 			errors = append(errors, syncErrEntry{Code: errCode, Detail: err.Error()})
 			if retryableCodes[errCode] && len(newFailed) < maxFailedSharecodes {
 				newFailed = append(newFailed, code)
