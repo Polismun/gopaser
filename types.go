@@ -2,12 +2,15 @@ package main
 
 // PlayerStats holds end-of-game KDA for a player.
 type PlayerStats struct {
-	Name    string `json:"name"`
-	Team    string `json:"team"`
-	SteamID uint64 `json:"steamId,omitempty,string"`
-	Kills   int    `json:"kills"`
-	Deaths  int    `json:"deaths"`
-	Assists int    `json:"assists"`
+	Name     string `json:"name"`
+	Team     string `json:"team"`
+	SteamID  uint64 `json:"steamId,omitempty,string"`
+	Kills    int    `json:"kills"`
+	Deaths   int    `json:"deaths"`
+	Assists  int    `json:"assists"`
+	Rank     int    `json:"rank,omitempty"`
+	RankType int    `json:"rankType,omitempty"`
+	Wins     int    `json:"wins,omitempty"`
 }
 
 // PlayerPosition is a per-tick snapshot of a player's state.

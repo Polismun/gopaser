@@ -157,12 +157,15 @@ func main() {
 			teamName = "CT"
 		}
 		result.Stats = append(result.Stats, PlayerStats{
-			Name:    player.Name,
-			Team:    teamName,
-			SteamID: player.SteamID64,
-			Kills:   player.Kills(),
-			Deaths:  player.Deaths(),
-			Assists: player.Assists(),
+			Name:     player.Name,
+			Team:     teamName,
+			SteamID:  player.SteamID64,
+			Kills:    player.Kills(),
+			Deaths:   player.Deaths(),
+			Assists:  player.Assists(),
+			Rank:     player.Rank(),
+			RankType: player.RankType(),
+			Wins:     player.CompetitiveWins(),
 		})
 	}
 

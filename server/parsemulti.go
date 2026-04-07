@@ -3,6 +3,8 @@ package main
 import (
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +30,7 @@ type parsedDemo struct {
 	ID        string `json:"id"`
 	SizeBytes int64  `json:"sizeBytes"`
 	DemName   string `json:"demName"`
+	DemoHash  string `json:"demoHash"`
 }
 
 // POST /parse-multi — accept uploaded .rar/.dem/.zst archive, extract all .dem, parse each, save each.
@@ -203,6 +206,19 @@ func extractDems(path string) ([]extractedDem, error) {
 
 // parseAndSave runs the parser on a .dem file, captures output, gzips to demos/, returns metadata.
 func parseAndSave(dem extractedDem) (parsedDemo, error) {
+	// Compute SHA-256 of the raw .dem file
+	demFile, err := os.Open(dem.path)
+	if err != nil {
+		return parsedDemo{}, fmt.Errorf("hash open: %w", err)
+	}
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, demFile); err != nil {
+		demFile.Close()
+		return parsedDemo{}, fmt.Errorf("hash compute: %w", err)
+	}
+	demFile.Close()
+	demoHash := hex.EncodeToString(hasher.Sum(nil))
+
 	cmd := exec.Command("./parser", dem.path)
 
 	stdout, err := cmd.StdoutPipe()
@@ -292,6 +308,7 @@ func parseAndSave(dem extractedDem) (parsedDemo, error) {
 		ID:        id,
 		SizeBytes: sizeBytes,
 		DemName:   dem.name,
+		DemoHash:  demoHash,
 	}, nil
 }
 
