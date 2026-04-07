@@ -2,58 +2,58 @@ package stats
 
 // PlayerGameStats holds computed stats for a single player in a match.
 type PlayerGameStats struct {
-	Name            string                     `json:"name"`
-	Team            string                     `json:"team"`
-	SteamID         string                     `json:"steamId,omitempty"`
-	Kills           int                        `json:"kills"`
-	Deaths          int                        `json:"deaths"`
-	Assists         int                        `json:"assists"`
-	KDRatio         float64                    `json:"kdRatio"`
-	ADR             float64                    `json:"adr"`
-	HSPercent       float64                    `json:"hsPercent"`
-	TotalDamage     int                        `json:"totalDamage"`
-	HSKills         int                        `json:"hsKills"`
-	OpeningKills    int                        `json:"openingKills"`
-	OpeningDeaths   int                        `json:"openingDeaths"`
-	ClutchWins      int                        `json:"clutchWins"`
-	ClutchAttempts  int                        `json:"clutchAttempts"`
-	KASTPercent     float64                    `json:"kastPercent"`
-	UtilityThrown   UtilityCount               `json:"utilityThrown"`
-	WeaponKills     map[string]WeaponKillStats `json:"weaponKills"`
-	DamageByHitgroup map[string]int            `json:"damageByHitgroup"`
-	HLTVRating      float64                    `json:"hltvRating"`
+	Name             string                     `json:"name" firestore:"name"`
+	Team             string                     `json:"team" firestore:"team"`
+	SteamID          string                     `json:"steamId,omitempty" firestore:"steamId,omitempty"`
+	Kills            int                        `json:"kills" firestore:"kills"`
+	Deaths           int                        `json:"deaths" firestore:"deaths"`
+	Assists          int                        `json:"assists" firestore:"assists"`
+	KDRatio          float64                    `json:"kdRatio" firestore:"kdRatio"`
+	ADR              float64                    `json:"adr" firestore:"adr"`
+	HSPercent        float64                    `json:"hsPercent" firestore:"hsPercent"`
+	TotalDamage      int                        `json:"totalDamage" firestore:"totalDamage"`
+	HSKills          int                        `json:"hsKills" firestore:"hsKills"`
+	OpeningKills     int                        `json:"openingKills" firestore:"openingKills"`
+	OpeningDeaths    int                        `json:"openingDeaths" firestore:"openingDeaths"`
+	ClutchWins       int                        `json:"clutchWins" firestore:"clutchWins"`
+	ClutchAttempts   int                        `json:"clutchAttempts" firestore:"clutchAttempts"`
+	KASTPercent      float64                    `json:"kastPercent" firestore:"kastPercent"`
+	UtilityThrown    UtilityCount               `json:"utilityThrown" firestore:"utilityThrown"`
+	WeaponKills      map[string]WeaponKillStats `json:"weaponKills" firestore:"weaponKills"`
+	DamageByHitgroup map[string]int             `json:"damageByHitgroup" firestore:"damageByHitgroup"`
+	HLTVRating       float64                    `json:"hltvRating" firestore:"hltvRating"`
 }
 
 // WeaponKillStats holds per-weapon kill breakdown.
 type WeaponKillStats struct {
-	Kills   int `json:"kills"`
-	HSKills int `json:"hsKills"`
+	Kills   int `json:"kills" firestore:"kills"`
+	HSKills int `json:"hsKills" firestore:"hsKills"`
 }
 
 // UtilityCount holds grenade throw counts per type.
 type UtilityCount struct {
-	Smoke   int `json:"smoke"`
-	Flash   int `json:"flash"`
-	HE      int `json:"he"`
-	Molotov int `json:"molotov"`
+	Smoke   int `json:"smoke" firestore:"smoke"`
+	Flash   int `json:"flash" firestore:"flash"`
+	HE      int `json:"he" firestore:"he"`
+	Molotov int `json:"molotov" firestore:"molotov"`
 }
 
 // RoundStats holds per-round summary.
 type RoundStats struct {
-	Round     int    `json:"round"`
-	Winner    string `json:"winner"`
-	KillCount int    `json:"killCount"`
-	MVP       string `json:"mvp,omitempty"`
+	Round     int    `json:"round" firestore:"round"`
+	Winner    string `json:"winner" firestore:"winner"`
+	KillCount int    `json:"killCount" firestore:"killCount"`
+	MVP       string `json:"mvp,omitempty" firestore:"mvp,omitempty"`
 }
 
 // DemoStatsResult is the top-level stats output stored in Firestore demoStats/{id}.
 type DemoStatsResult struct {
-	Players     []PlayerGameStats `json:"players"`
-	Rounds      []RoundStats      `json:"rounds"`
-	TotalRounds int               `json:"totalRounds"`
-	MapName     string            `json:"mapName"`
-	DemoID      string            `json:"demoId"`
-	Date        string            `json:"date"`
+	Players     []PlayerGameStats `json:"players" firestore:"players"`
+	Rounds      []RoundStats      `json:"rounds" firestore:"rounds"`
+	TotalRounds int               `json:"totalRounds" firestore:"totalRounds"`
+	MapName     string            `json:"mapName" firestore:"mapName"`
+	DemoID      string            `json:"demoId" firestore:"demoId"`
+	Date        string            `json:"date" firestore:"date"`
 }
 
 // RoundBoundary marks the start/end ticks and winner of a round.
