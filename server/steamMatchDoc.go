@@ -13,6 +13,7 @@ type MatchPlayer struct {
 	AccountID  int64   `firestore:"accountId" json:"accountId"`
 	Team       string  `firestore:"team" json:"team"`
 	Name       string  `firestore:"name,omitempty" json:"name,omitempty"`
+	Avatar     string  `firestore:"avatar,omitempty" json:"avatar,omitempty"`
 	Kills      int     `firestore:"kills" json:"kills"`
 	Deaths     int     `firestore:"deaths" json:"deaths"`
 	Assists    int     `firestore:"assists" json:"assists"`
@@ -122,7 +123,8 @@ type playerEnrichment struct {
 }
 
 // matchExistsBySharecode checks if a MatchDoc with this sharecode exists for the user.
-func matchExistsBySharecode(ctx context.Context, fs *firestore.Client, ownerID, sharecode string) (bool, error) {
+// Returns (exists, isParsed, matchDocID).
+func matchExistsBySharecode(ctx context.Context, fs *firestore.Client, ownerID, sharecode string) (bool, bool, string) {
 	iter := fs.Collection("matches").
 		Where("ownerId", "==", ownerID).
 		Where("sharecode", "==", sharecode).
@@ -130,11 +132,12 @@ func matchExistsBySharecode(ctx context.Context, fs *firestore.Client, ownerID, 
 		Documents(ctx)
 	defer iter.Stop()
 
-	_, err := iter.Next()
+	doc, err := iter.Next()
 	if err != nil {
-		return false, nil // no match found or error → treat as not existing
+		return false, false, ""
 	}
-	return true, nil
+	status, _ := doc.DataAt("status")
+	return true, status == "parsed", doc.Ref.ID
 }
 
 // findDemoBySharcode finds a DemoDoc by steamSharecode (any owner).

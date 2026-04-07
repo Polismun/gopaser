@@ -86,10 +86,16 @@ func getNextMatchSharingCode(steamID, authCode, knownCode string) (string, error
 	return "", fmt.Errorf("STEAM_API_429")
 }
 
-// fetchPlayerNames fetches persona names for up to 100 SteamID64s in a single API call.
-// Returns a map[steamId64]personaName. Best-effort — returns empty map on failure.
-func fetchPlayerNames(steamIDs []string) map[string]string {
-	result := make(map[string]string)
+// SteamProfile holds persona name + avatar URL from GetPlayerSummaries.
+type SteamProfile struct {
+	Name   string
+	Avatar string // avatarmedium (64x64)
+}
+
+// fetchPlayerProfiles fetches persona names + avatars for up to 100 SteamID64s.
+// Returns a map[steamId64]SteamProfile. Best-effort — returns empty map on failure.
+func fetchPlayerProfiles(steamIDs []string) map[string]SteamProfile {
+	result := make(map[string]SteamProfile)
 	apiKey := os.Getenv("STEAM_API_KEY")
 	if apiKey == "" || len(steamIDs) == 0 {
 		return result
@@ -114,8 +120,9 @@ func fetchPlayerNames(steamIDs []string) map[string]string {
 	var body struct {
 		Response struct {
 			Players []struct {
-				SteamID     string `json:"steamid"`
-				PersonaName string `json:"personaname"`
+				SteamID      string `json:"steamid"`
+				PersonaName  string `json:"personaname"`
+				AvatarMedium string `json:"avatarmedium"`
 			} `json:"players"`
 		} `json:"response"`
 	}
@@ -125,7 +132,7 @@ func fetchPlayerNames(steamIDs []string) map[string]string {
 
 	for _, p := range body.Response.Players {
 		if p.PersonaName != "" {
-			result[p.SteamID] = p.PersonaName
+			result[p.SteamID] = SteamProfile{Name: p.PersonaName, Avatar: p.AvatarMedium}
 		}
 	}
 	return result

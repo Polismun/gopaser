@@ -205,10 +205,12 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 
 func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, code string) error {
 	// 0. Dedup: match by sharecode
-	exists, _ := matchExistsBySharecode(ctx, fs, uid, code)
-	if exists {
-		return nil
+	exists, isParsed, existingMatchID := matchExistsBySharecode(ctx, fs, uid, code)
+	if exists && isParsed {
+		return nil // fully processed
 	}
+	// If exists but stuck pending (no demo), we'll re-process from download step
+	resumePending := exists && !isParsed
 
 	// Dedup: demo by sharecode (cross-user)
 	demoHit, _ := findDemoBySharcode(ctx, fs, code)
@@ -237,51 +239,59 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 	for i, p := range gcResult.Players {
 		steamIDs[i] = accountIDToSteamID64(p.AccountID)
 	}
-	nameMap := fetchPlayerNames(steamIDs)
+	profileMap := fetchPlayerProfiles(steamIDs)
 
-	// 2. Create MatchDoc pending
-	matchDocID := gcResult.MatchID
-	if matchDocID == "" {
-		matchDocID = generateSyncUUID()
-	}
-	matchDate := nowISO()
-	if gcResult.Matchtime > 0 {
-		matchDate = time.Unix(int64(gcResult.Matchtime), 0).UTC().Format(time.RFC3339)
-	}
-
-	gcPlayers := make([]MatchPlayer, len(gcResult.Players))
-	for i, p := range gcResult.Players {
-		sid := accountIDToSteamID64(p.AccountID)
-		team := "CT"
-		if i >= 5 {
-			team = "T"
+	// 2. Create MatchDoc pending (skip if resuming a stuck pending)
+	var matchDocID string
+	if resumePending {
+		matchDocID = existingMatchID
+		log.Printf("[steam-sync] resuming stuck pending match %s for sharecode %s", matchDocID, code)
+	} else {
+		matchDocID = gcResult.MatchID
+		if matchDocID == "" {
+			matchDocID = generateSyncUUID()
 		}
-		gcPlayers[i] = MatchPlayer{
-			AccountID: p.AccountID,
-			Name:      nameMap[sid],
-			Team:      team,
-			Kills:     p.Kills, Deaths: p.Deaths, Assists: p.Assists,
-			Score: p.Score, MVPs: p.MVPs, Headshots: p.Headshots,
-			RankID: p.RankID, RankChange: p.RankChange, RankType: p.RankType, Wins: p.Wins,
+		matchDate := nowISO()
+		if gcResult.Matchtime > 0 {
+			matchDate = time.Unix(int64(gcResult.Matchtime), 0).UTC().Format(time.RFC3339)
 		}
-	}
 
-	pendingMatch := MatchDoc{
-		ID:         matchDocID,
-		OwnerID:    uid,
-		Status:     "pending",
-		Source:     "steam",
-		MatchDate:  matchDate,
-		Sharecode:  code,
-		GCMatchID:  gcResult.MatchID,
-		Map:        gcResult.Map,
-		TeamScores: [2]int{gcResult.TeamScores[0], gcResult.TeamScores[1]},
-		Duration:   gcResult.Duration,
-		Players:    gcPlayers,
-		CreatedAt:  nowISO(),
-	}
-	if err := createMatchDoc(ctx, fs, pendingMatch); err != nil {
-		log.Printf("[steam-sync] failed to create pending MatchDoc: %v", err)
+		gcPlayers := make([]MatchPlayer, len(gcResult.Players))
+		for i, p := range gcResult.Players {
+			sid := accountIDToSteamID64(p.AccountID)
+			team := "CT"
+			if i >= 5 {
+				team = "T"
+			}
+			profile := profileMap[sid]
+			gcPlayers[i] = MatchPlayer{
+				AccountID: p.AccountID,
+				Name:      profile.Name,
+				Avatar:    profile.Avatar,
+				Team:      team,
+				Kills:     p.Kills, Deaths: p.Deaths, Assists: p.Assists,
+				Score: p.Score, MVPs: p.MVPs, Headshots: p.Headshots,
+				RankID: p.RankID, RankChange: p.RankChange, RankType: p.RankType, Wins: p.Wins,
+			}
+		}
+
+		pendingMatch := MatchDoc{
+			ID:         matchDocID,
+			OwnerID:    uid,
+			Status:     "pending",
+			Source:     "steam",
+			MatchDate:  matchDate,
+			Sharecode:  code,
+			GCMatchID:  gcResult.MatchID,
+			Map:        gcResult.Map,
+			TeamScores: [2]int{gcResult.TeamScores[0], gcResult.TeamScores[1]},
+			Duration:   gcResult.Duration,
+			Players:    gcPlayers,
+			CreatedAt:  nowISO(),
+		}
+		if err := createMatchDoc(ctx, fs, pendingMatch); err != nil {
+			log.Printf("[steam-sync] failed to create pending MatchDoc: %v", err)
+		}
 	}
 
 	if gcResult.URL == "" {
@@ -353,8 +363,10 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 		}
 	}
 	// Use GC scores as source of truth
-	scoreCT = pendingMatch.TeamScores[0]
-	scoreT = pendingMatch.TeamScores[1]
+	if len(gcResult.TeamScores) >= 2 {
+		scoreCT = gcResult.TeamScores[0]
+		scoreT = gcResult.TeamScores[1]
+	}
 
 	// Build player enrichments (name + rank + hltvRating from stats)
 	var enrichments []playerEnrichment
