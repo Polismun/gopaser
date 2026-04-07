@@ -102,7 +102,8 @@ func handleSteamSync(w http.ResponseWriter, r *http.Request) {
 
 	// Use a detached context — the HTTP client (Vercel proxy) may close the
 	// connection before the sync finishes, but we must keep writing to Firestore.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// 30 min allows for 20 matches × ~60s each (download + parse + stats + writes).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	result := runSync(ctx, fs, req.UID, req.IDToken)
 
