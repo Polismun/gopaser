@@ -17,6 +17,18 @@ type PlayerGameStats struct {
 	OpeningDeaths    int                        `json:"openingDeaths" firestore:"openingDeaths"`
 	ClutchWins       int                        `json:"clutchWins" firestore:"clutchWins"`
 	ClutchAttempts   int                        `json:"clutchAttempts" firestore:"clutchAttempts"`
+	ClutchBreakdown  map[int]ClutchRecord       `json:"clutchBreakdown,omitempty" firestore:"clutchBreakdown,omitempty"`
+	ClutchEvents     []ClutchEvent              `json:"clutchEvents,omitempty" firestore:"clutchEvents,omitempty"`
+	TradeKills       int                        `json:"tradeKills" firestore:"tradeKills"`
+	TradedDeaths     int                        `json:"tradedDeaths" firestore:"tradedDeaths"`
+	MultiKillRounds  map[int]int                `json:"multiKillRounds,omitempty" firestore:"multiKillRounds,omitempty"`
+	Duels            map[string]DuelRecord      `json:"duels,omitempty" firestore:"duels,omitempty"`
+	BombPlants       int                        `json:"bombPlants" firestore:"bombPlants"`
+	BombDefuses      int                        `json:"bombDefuses" firestore:"bombDefuses"`
+	RoundsSurvived   int                        `json:"roundsSurvived" firestore:"roundsSurvived"`
+	WeaponCatKills   map[string]int             `json:"weaponCatKills,omitempty" firestore:"weaponCatKills,omitempty"`
+	FlashAssists     int                        `json:"flashAssists" firestore:"flashAssists"`
+	RoundEconomy     []RoundEcon                `json:"roundEconomy,omitempty" firestore:"roundEconomy,omitempty"`
 	KASTPercent      float64                    `json:"kastPercent" firestore:"kastPercent"`
 	UtilityThrown    UtilityCount               `json:"utilityThrown" firestore:"utilityThrown"`
 	WeaponKills      map[string]WeaponKillStats `json:"weaponKills" firestore:"weaponKills"`
@@ -97,7 +109,11 @@ type TickData struct {
 	IsRoundEnd    bool         `json:"isRoundEnd,omitempty"`
 	RoundNumber   *int         `json:"roundNumber,omitempty"`
 	Winner        string       `json:"winner,omitempty"`
-	BombPlantTick *int         `json:"bombPlantTick,omitempty"`
+	BombPlantTick      *int    `json:"bombPlantTick,omitempty"`
+	IsPlanting         bool    `json:"isPlanting,omitempty"`
+	IsDefusing         bool    `json:"isDefusing,omitempty"`
+	PlantingPlayerName string  `json:"plantingPlayerName,omitempty"`
+	DefusingPlayerName string  `json:"defusingPlayerName,omitempty"`
 }
 
 // TickPlayer is a per-tick player state (only fields needed for stats).
@@ -106,6 +122,7 @@ type TickPlayer struct {
 	Team      string   `json:"team"`
 	IsAlive   bool     `json:"isAlive"`
 	Equipment []string `json:"equipment"`
+	Money     int      `json:"money"`
 }
 
 // KillEvent mirrors the parser output.
@@ -136,4 +153,26 @@ type GrenadeEvent struct {
 	Type        string `json:"type"`
 	Action      string `json:"action"`
 	ThrowerName string `json:"throwerName"`
+}
+
+// ClutchEvent is a single clutch situation for a player.
+type ClutchEvent struct {
+	Round   int  `json:"round" firestore:"round"`
+	Enemies int  `json:"enemies" firestore:"enemies"`
+	Won     bool `json:"won" firestore:"won"`
+	Kills   int  `json:"kills" firestore:"kills"`
+	Saved   bool `json:"saved" firestore:"saved"`
+}
+
+// DuelRecord holds head-to-head kills between two players.
+type DuelRecord struct {
+	Kills  int `json:"kills" firestore:"kills"`
+	Deaths int `json:"deaths" firestore:"deaths"`
+}
+
+// RoundEcon holds a player's economy at the start of a round.
+type RoundEcon struct {
+	Round     int      `json:"round" firestore:"round"`
+	Money     int      `json:"money" firestore:"money"`
+	Equipment []string `json:"equipment" firestore:"equipment"`
 }

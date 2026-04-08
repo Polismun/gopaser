@@ -83,6 +83,24 @@ func SortKillsByTick(kills []KillEvent) {
 	sort.Slice(kills, func(i, j int) bool { return kills[i].Tick < kills[j].Tick })
 }
 
+// ComputeRoundsSurvived counts rounds where the player is alive at the end.
+func ComputeRoundsSurvived(ticks []TickData, boundaries []RoundBoundary, playerName string) int {
+	survived := 0
+	for _, b := range boundaries {
+		endTick := FindTickAt(ticks, b.EndTick)
+		if endTick == nil {
+			continue
+		}
+		for _, p := range endTick.Players {
+			if p.Name == playerName && p.IsAlive {
+				survived++
+				break
+			}
+		}
+	}
+	return survived
+}
+
 // FindTickAt returns the tick closest to (>=) targetTick using binary search.
 func FindTickAt(ticks []TickData, targetTick int) *TickData {
 	lo, hi := 0, len(ticks)-1

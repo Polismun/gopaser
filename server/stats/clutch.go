@@ -1,15 +1,25 @@
 package stats
 
-// ClutchStatsResult holds clutch stats for a player.
-type ClutchStatsResult struct {
-	ClutchWins     int
-	ClutchAttempts int
+// ClutchRecord holds wins/attempts for a specific 1vN situation.
+type ClutchRecord struct {
+	Wins     int `json:"wins" firestore:"wins"`
+	Attempts int `json:"attempts" firestore:"attempts"`
 }
 
-// ComputeClutchStats detects 1vN clutch attempts and wins.
+// ClutchStatsResult holds clutch stats for a player.
+type ClutchStatsResult struct {
+	ClutchWins      int
+	ClutchAttempts  int
+	ClutchBreakdown map[int]ClutchRecord
+	ClutchEvents    []ClutchEvent
+}
+
+// ComputeClutchStats detects 1vN clutch attempts and wins, with per-event details.
 func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundBoundary, playerName, playerTeam string) ClutchStatsResult {
 	clutchWins := 0
 	clutchAttempts := 0
+	breakdown := make(map[int]ClutchRecord)
+	var events []ClutchEvent
 
 	killsByRound := GroupKillsByRound(kills, boundaries)
 
@@ -23,7 +33,6 @@ func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundB
 		copy(sorted, roundKills)
 		SortKillsByTick(sorted)
 
-		// Build initial alive set from first tick of round
 		startTick := FindTickAt(ticks, b.StartTick)
 		if startTick == nil {
 			continue
@@ -39,12 +48,14 @@ func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundB
 		}
 
 		isClutching := false
+		clutchN := 0
+		clutchKills := 0
 
 		for _, kill := range sorted {
 			delete(aliveSet, kill.VictimName)
 
 			if !aliveSet[playerName] {
-				continue // player dead
+				continue
 			}
 
 			aliveTeammates := countAliveOnTeam(aliveSet, teamByPlayer, playerTeam)
@@ -56,16 +67,52 @@ func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundB
 
 			if aliveTeammates == 1 && aliveEnemies > 0 && !isClutching {
 				isClutching = true
+				clutchN = aliveEnemies
+				clutchKills = 0
 				clutchAttempts++
+				rec := breakdown[clutchN]
+				rec.Attempts++
+				breakdown[clutchN] = rec
+			}
+
+			// Count kills during clutch
+			if isClutching && kill.KillerName == playerName {
+				clutchKills++
 			}
 		}
 
-		if isClutching && b.Winner == playerTeam {
-			clutchWins++
+		if isClutching {
+			won := b.Winner == playerTeam
+
+			if won {
+				clutchWins++
+				rec := breakdown[clutchN]
+				rec.Wins++
+				breakdown[clutchN] = rec
+			}
+
+			// Save detection: player alive at round end but round lost
+			saved := false
+			if !won && aliveSet[playerName] {
+				saved = true
+			}
+
+			events = append(events, ClutchEvent{
+				Round:   b.RoundNumber,
+				Enemies: clutchN,
+				Won:     won,
+				Kills:   clutchKills,
+				Saved:   saved,
+			})
 		}
 	}
 
-	return ClutchStatsResult{ClutchWins: clutchWins, ClutchAttempts: clutchAttempts}
+	return ClutchStatsResult{
+		ClutchWins:      clutchWins,
+		ClutchAttempts:  clutchAttempts,
+		ClutchBreakdown: breakdown,
+		ClutchEvents:    events,
+	}
 }
 
 func countAliveOnTeam(aliveSet map[string]bool, teamByPlayer map[string]string, team string) int {

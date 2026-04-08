@@ -18,6 +18,11 @@ func ComputeAllPlayerStats(pr *ParseResult, demoID string) *DemoStatsResult {
 		clutch := ComputeClutchStats(pr.Kills, pr.Ticks, boundaries, s.Name, s.Team)
 		kast := ComputeKAST(pr.Kills, pr.Ticks, boundaries, s.Name)
 		utility := ComputeUtilityStats(pr.GrenadeEvents, s.Name)
+		duels := ComputeDuels(pr.Kills, s.Name)
+		bomb := ComputeBombStats(pr.Ticks, boundaries, s.Name)
+		survived := ComputeRoundsSurvived(pr.Ticks, boundaries, s.Name)
+		weaponCats := ComputeWeaponCategoryKills(pr.Kills, s.Name)
+		economy := ComputeRoundEconomy(pr.Ticks, boundaries, s.Name)
 
 		hltvRating := ComputeHLTVRating(
 			s.Name, s.Team,
@@ -50,6 +55,18 @@ func ComputeAllPlayerStats(pr *ParseResult, demoID string) *DemoStatsResult {
 			OpeningDeaths:    kill.OpeningDeaths,
 			ClutchWins:       clutch.ClutchWins,
 			ClutchAttempts:   clutch.ClutchAttempts,
+			ClutchBreakdown:  clutch.ClutchBreakdown,
+			ClutchEvents:     clutch.ClutchEvents,
+			TradeKills:       kill.TradeKills,
+			TradedDeaths:     kill.TradedDeaths,
+			MultiKillRounds:  kill.MultiKillRounds,
+			Duels:            duels,
+			BombPlants:       bomb.Plants,
+			BombDefuses:      bomb.Defuses,
+			RoundsSurvived:   survived,
+			WeaponCatKills:   weaponCats,
+			FlashAssists:     kill.FlashAssists,
+			RoundEconomy:     economy,
 			KASTPercent:      kast,
 			UtilityThrown:    utility,
 			WeaponKills:      kill.WeaponKills,
