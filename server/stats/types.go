@@ -17,11 +17,11 @@ type PlayerGameStats struct {
 	OpeningDeaths    int                        `json:"openingDeaths" firestore:"openingDeaths"`
 	ClutchWins       int                        `json:"clutchWins" firestore:"clutchWins"`
 	ClutchAttempts   int                        `json:"clutchAttempts" firestore:"clutchAttempts"`
-	ClutchBreakdown  map[int]ClutchRecord       `json:"clutchBreakdown,omitempty" firestore:"clutchBreakdown,omitempty"`
+	ClutchBreakdown  map[string]ClutchRecord    `json:"clutchBreakdown,omitempty" firestore:"clutchBreakdown,omitempty"`
 	ClutchEvents     []ClutchEvent              `json:"clutchEvents,omitempty" firestore:"clutchEvents,omitempty"`
 	TradeKills       int                        `json:"tradeKills" firestore:"tradeKills"`
 	TradedDeaths     int                        `json:"tradedDeaths" firestore:"tradedDeaths"`
-	MultiKillRounds  map[int]int                `json:"multiKillRounds,omitempty" firestore:"multiKillRounds,omitempty"`
+	MultiKillRounds  map[string]int             `json:"multiKillRounds,omitempty" firestore:"multiKillRounds,omitempty"`
 	Duels            map[string]DuelRecord      `json:"duels,omitempty" firestore:"duels,omitempty"`
 	BombPlants       int                        `json:"bombPlants" firestore:"bombPlants"`
 	BombDefuses      int                        `json:"bombDefuses" firestore:"bombDefuses"`

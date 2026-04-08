@@ -2,6 +2,7 @@ package stats
 
 import (
 	"math"
+	"strconv"
 	"time"
 )
 
@@ -59,11 +60,11 @@ func ComputeAllPlayerStats(pr *ParseResult, demoID string) *DemoStatsResult {
 			OpeningDeaths:    kill.OpeningDeaths,
 			ClutchWins:       clutch.ClutchWins,
 			ClutchAttempts:   clutch.ClutchAttempts,
-			ClutchBreakdown:  clutch.ClutchBreakdown,
+			ClutchBreakdown:  intMapToString(clutch.ClutchBreakdown),
 			ClutchEvents:     clutch.ClutchEvents,
 			TradeKills:       kill.TradeKills,
 			TradedDeaths:     kill.TradedDeaths,
-			MultiKillRounds:  kill.MultiKillRounds,
+			MultiKillRounds:  intIntMapToString(kill.MultiKillRounds),
 			Duels:            duels,
 			BombPlants:       bomb.Plants,
 			BombDefuses:      bomb.Defuses,
@@ -125,4 +126,28 @@ func ComputeAllPlayerStats(pr *ParseResult, demoID string) *DemoStatsResult {
 		DemoID:      demoID,
 		Date:        time.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+// intMapToString converts map[int]V to map[string]V (Firestore requires string keys).
+func intMapToString[V any](m map[int]V) map[string]V {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]V, len(m))
+	for k, v := range m {
+		out[strconv.Itoa(k)] = v
+	}
+	return out
+}
+
+// intIntMapToString converts map[int]int to map[string]int.
+func intIntMapToString(m map[int]int) map[string]int {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(m))
+	for k, v := range m {
+		out[strconv.Itoa(k)] = v
+	}
+	return out
 }
