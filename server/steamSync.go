@@ -32,7 +32,11 @@ var activeSyncs sync.Map
 // Retryable error codes — sharecode persisted for next sync.
 var retryableCodes = map[string]bool{
 	"VPS_ERROR": true, "NETWORK": true, "STEAM_API_UNAVAILABLE": true, "UNKNOWN": true,
+	"DOWNLOAD_CORRUPT": true, // often transient (network cut mid-stream), retry up to maxRetries
 }
+
+// Max retries per sharecode before marking as permanently failed.
+const maxRetriesPerSharecode = 10
 
 type syncRequest struct {
 	UID     string `json:"uid"`
@@ -170,6 +174,11 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 		}
 	}
 	var newFailed []string
+	retries := sl.FailedRetries
+	if retries == nil {
+		retries = make(map[string]int)
+	}
+	newRetries := make(map[string]int)
 
 	for _, code := range toProcess {
 		err := processSharecode(ctx, fs, uid, idToken, code)
@@ -178,14 +187,21 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 			if strings.Contains(err.Error(), ":") {
 				errCode = strings.SplitN(err.Error(), ":", 2)[0]
 			}
-			log.Printf("[steam-sync] sharecode %s failed: %s: %s", code, errCode, err.Error())
+			attempts := retries[code] + 1
+			log.Printf("[steam-sync] sharecode %s failed (attempt %d): %s: %s", code, attempts, errCode, err.Error())
 			errors = append(errors, syncErrEntry{Code: errCode, Detail: err.Error()})
-			if retryableCodes[errCode] && len(newFailed) < maxFailedSharecodes {
+
+			if retryableCodes[errCode] && attempts < maxRetriesPerSharecode && len(newFailed) < maxFailedSharecodes {
 				newFailed = append(newFailed, code)
+				newRetries[code] = attempts
 			} else {
-				// Non-retryable: mark any existing pending MatchDoc as failed
+				// Max retries exceeded or non-retryable: mark MatchDoc as failed
 				if ex, st, mid := matchExistsBySharecode(ctx, fs, uid, code); ex && st == "pending" {
-					if fErr := updateMatchDocFailed(ctx, fs, mid, errCode); fErr != nil {
+					reason := errCode
+					if attempts >= maxRetriesPerSharecode {
+						reason = errCode + "_MAX_RETRIES"
+					}
+					if fErr := updateMatchDocFailed(ctx, fs, mid, reason); fErr != nil {
 						log.Printf("[steam-sync] failed to mark match %s as failed: %v", mid, fErr)
 					}
 				}
@@ -204,6 +220,7 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 		"lastSyncAt":           nowISO(),
 		"lastSyncImportedCount": imported,
 		"failedSharecodes":     newFailed,
+		"failedRetries":        newRetries,
 	}
 	if cursor != sl.LatestSharecode {
 		updates["latestSharecode"] = cursor
@@ -325,6 +342,7 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 	}
 
 	// 3. Download + decompress + hash
+	log.Printf("[steam-sync] downloading %s for sharecode %s", gcResult.URL, code)
 	dl, err := downloadAndDecompressBz2(gcResult.URL)
 	if err != nil {
 		if isDemoNotFound(err) {

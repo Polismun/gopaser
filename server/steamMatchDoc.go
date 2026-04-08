@@ -199,12 +199,13 @@ func createDemoDoc(ctx context.Context, fs *firestore.Client, demoID string, dat
 
 // readSteamLink reads the steamLink from a user doc.
 type steamLinkData struct {
-	SteamID            string   `firestore:"steamId"`
-	AuthCodeEncrypted  string   `firestore:"authCodeEncrypted"`
-	AuthCodeIV         string   `firestore:"authCodeIv"`
-	LatestSharecode    string   `firestore:"latestSharecode"`
-	FailedSharecodes   []string `firestore:"failedSharecodes"`
-	LastSyncAt         string   `firestore:"lastSyncAt"`
+	SteamID            string         `firestore:"steamId"`
+	AuthCodeEncrypted  string         `firestore:"authCodeEncrypted"`
+	AuthCodeIV         string         `firestore:"authCodeIv"`
+	LatestSharecode    string         `firestore:"latestSharecode"`
+	FailedSharecodes   []string       `firestore:"failedSharecodes"`
+	FailedRetries      map[string]int `firestore:"failedRetries"` // sharecode → attempt count
+	LastSyncAt         string         `firestore:"lastSyncAt"`
 }
 
 func readSteamLink(ctx context.Context, fs *firestore.Client, uid string) (*steamLinkData, error) {
@@ -219,12 +220,25 @@ func readSteamLink(ctx context.Context, fs *firestore.Client, uid string) (*stea
 		return nil, fmt.Errorf("no steamLink for user %s", uid)
 	}
 
+	// Parse failedRetries map[string]int
+	retries := make(map[string]int)
+	if raw, ok := sl["failedRetries"].(map[string]interface{}); ok {
+		for k, v := range raw {
+			if n, ok := v.(int64); ok {
+				retries[k] = int(n)
+			} else if n, ok := v.(float64); ok {
+				retries[k] = int(n)
+			}
+		}
+	}
+
 	return &steamLinkData{
 		SteamID:           strVal(sl, "steamId"),
 		AuthCodeEncrypted: strVal(sl, "authCodeEncrypted"),
 		AuthCodeIV:        strVal(sl, "authCodeIv"),
 		LatestSharecode:   strVal(sl, "latestSharecode"),
 		FailedSharecodes:  strSlice(sl, "failedSharecodes"),
+		FailedRetries:     retries,
 		LastSyncAt:        strVal(sl, "lastSyncAt"),
 	}, nil
 }
