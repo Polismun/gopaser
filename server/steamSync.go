@@ -531,6 +531,7 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 		TeamCT:            teamCT,
 		TeamT:             teamT,
 		MapName:           parseResult.MapName,
+		ServerName:        parseResult.ServerName,
 		PlayerEnrichments: enrichments,
 	}); err != nil {
 		log.Printf("[steam-sync] MatchDoc enrich failed: %v", err)

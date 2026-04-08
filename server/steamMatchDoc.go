@@ -44,6 +44,7 @@ type MatchDoc struct {
 	DemoStatsID string        `firestore:"demoStatsId,omitempty" json:"demoStatsId,omitempty"`
 	TeamCT      string        `firestore:"teamCT,omitempty" json:"teamCT,omitempty"`
 	TeamT       string        `firestore:"teamT,omitempty" json:"teamT,omitempty"`
+	ServerName  string        `firestore:"serverName,omitempty" json:"serverName,omitempty"`
 	FailReason  string        `firestore:"failReason,omitempty" json:"failReason,omitempty"`
 	CreatedAt   string        `firestore:"createdAt" json:"createdAt"`
 }
@@ -109,6 +110,9 @@ func enrichMatchDoc(ctx context.Context, fs *firestore.Client, matchID string, e
 	if enrichment.MapName != "" {
 		updates = append(updates, firestore.Update{Path: "map", Value: enrichment.MapName})
 	}
+	if enrichment.ServerName != "" {
+		updates = append(updates, firestore.Update{Path: "serverName", Value: enrichment.ServerName})
+	}
 
 	_, err = ref.Update(ctx, updates)
 	return err
@@ -120,6 +124,7 @@ type matchEnrichment struct {
 	TeamCT            string
 	TeamT             string
 	MapName           string
+	ServerName        string
 	PlayerEnrichments []playerEnrichment
 }
 

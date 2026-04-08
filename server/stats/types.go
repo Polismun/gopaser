@@ -80,6 +80,7 @@ type RoundBoundary struct {
 type ParseResult struct {
 	Success       bool           `json:"success"`
 	MapName       string         `json:"mapName"`
+	ServerName    string         `json:"serverName,omitempty"`
 	TickRate      int            `json:"tickRate"`
 	Stats         []PlayerStat   `json:"stats"`
 	Ticks         []TickData     `json:"ticks"`
