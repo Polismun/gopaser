@@ -15,7 +15,7 @@ type ClutchStatsResult struct {
 }
 
 // ComputeClutchStats detects 1vN clutch attempts and wins, with per-event details.
-func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundBoundary, killsByRound map[int][]KillEvent, playerName, playerTeam string) ClutchStatsResult {
+func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundBoundary, killsByRound map[int][]KillEvent, playerName, _ string) ClutchStatsResult {
 	clutchWins := 0
 	clutchAttempts := 0
 	breakdown := make(map[int]ClutchRecord)
@@ -45,6 +45,12 @@ func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundB
 			teamByPlayer[p.Name] = p.Team
 		}
 
+		// Use the player's team THIS round (handles side swaps at half-time)
+		roundTeam := teamByPlayer[playerName]
+		if roundTeam == "" {
+			continue
+		}
+
 		isClutching := false
 		clutchN := 0
 		clutchKills := 0
@@ -56,9 +62,9 @@ func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundB
 				continue
 			}
 
-			aliveTeammates := countAliveOnTeam(aliveSet, teamByPlayer, playerTeam)
+			aliveTeammates := countAliveOnTeam(aliveSet, teamByPlayer, roundTeam)
 			enemyTeam := "T"
-			if playerTeam == "T" {
+			if roundTeam == "T" {
 				enemyTeam = "CT"
 			}
 			aliveEnemies := countAliveOnTeam(aliveSet, teamByPlayer, enemyTeam)
@@ -80,7 +86,7 @@ func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundB
 		}
 
 		if isClutching {
-			won := b.Winner == playerTeam
+			won := b.Winner == roundTeam
 
 			if won {
 				clutchWins++
