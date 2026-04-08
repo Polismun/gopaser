@@ -15,7 +15,7 @@ import (
 const (
 	maxBz2CompressedBytes   int64 = 300 << 20  // 300 MB max bz2 download
 	maxBz2DecompressedBytes int64 = 500 << 20  // 500 MB max after bunzip
-	bz2DownloadTimeout            = 60 * time.Second
+	bz2DownloadTimeout            = 5 * time.Minute
 )
 
 // downloadClient: no redirects, bounded timeout.

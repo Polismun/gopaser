@@ -181,7 +181,11 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 		}
 	}
 
-	// Persist progress
+	// Persist progress — use a fresh context so this write succeeds even if
+	// the main sync context expired (otherwise failedSharecodes are lost).
+	saveCtx, saveCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer saveCancel()
+
 	updates := map[string]interface{}{
 		"lastSyncAt":           nowISO(),
 		"lastSyncImportedCount": imported,
@@ -195,7 +199,7 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 	} else {
 		updates["lastSyncError"] = nil
 	}
-	if err := updateSteamLink(ctx, fs, uid, updates); err != nil {
+	if err := updateSteamLink(saveCtx, fs, uid, updates); err != nil {
 		log.Printf("[steam-sync] failed to update steamLink for %s: %v", uid, err)
 	}
 
@@ -448,11 +452,13 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 
 	if err := createDemoDoc(ctx, fs, parsed.ID, demoData); err != nil {
 		log.Printf("[steam-sync] DemoDoc write failed: %v", err)
+		return fmt.Errorf("VPS_ERROR:DemoDoc write: %v", err)
 	}
 
 	// demoStats
 	if err := saveDemoStats(ctx, fs, parsed.ID, allStats); err != nil {
 		log.Printf("[steam-sync] demoStats write failed: %v", err)
+		// Non-fatal: match still works without detailed stats
 	}
 
 	// demoHash
