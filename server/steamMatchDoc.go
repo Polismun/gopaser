@@ -44,12 +44,22 @@ type MatchDoc struct {
 	DemoStatsID string        `firestore:"demoStatsId,omitempty" json:"demoStatsId,omitempty"`
 	TeamCT      string        `firestore:"teamCT,omitempty" json:"teamCT,omitempty"`
 	TeamT       string        `firestore:"teamT,omitempty" json:"teamT,omitempty"`
+	FailReason  string        `firestore:"failReason,omitempty" json:"failReason,omitempty"`
 	CreatedAt   string        `firestore:"createdAt" json:"createdAt"`
 }
 
 // createMatchDoc creates a new MatchDoc in Firestore.
 func createMatchDoc(ctx context.Context, fs *firestore.Client, match MatchDoc) error {
 	_, err := fs.Collection("matches").Doc(match.ID).Set(ctx, match)
+	return err
+}
+
+// updateMatchDocFailed marks a pending MatchDoc as failed with a reason.
+func updateMatchDocFailed(ctx context.Context, fs *firestore.Client, matchID, failReason string) error {
+	_, err := fs.Collection("matches").Doc(matchID).Update(ctx, []firestore.Update{
+		{Path: "status", Value: "failed"},
+		{Path: "failReason", Value: failReason},
+	})
 	return err
 }
 
@@ -123,8 +133,8 @@ type playerEnrichment struct {
 }
 
 // matchExistsBySharecode checks if a MatchDoc with this sharecode exists for the user.
-// Returns (exists, isParsed, matchDocID).
-func matchExistsBySharecode(ctx context.Context, fs *firestore.Client, ownerID, sharecode string) (bool, bool, string) {
+// Returns (exists, status string, matchDocID).
+func matchExistsBySharecode(ctx context.Context, fs *firestore.Client, ownerID, sharecode string) (bool, string, string) {
 	iter := fs.Collection("matches").
 		Where("ownerId", "==", ownerID).
 		Where("sharecode", "==", sharecode).
@@ -134,10 +144,10 @@ func matchExistsBySharecode(ctx context.Context, fs *firestore.Client, ownerID, 
 
 	doc, err := iter.Next()
 	if err != nil {
-		return false, false, ""
+		return false, "", ""
 	}
 	status, _ := doc.DataAt("status")
-	return true, status == "parsed", doc.Ref.ID
+	return true, fmt.Sprintf("%v", status), doc.Ref.ID
 }
 
 // findDemoBySharcode finds a DemoDoc by steamSharecode (any owner).

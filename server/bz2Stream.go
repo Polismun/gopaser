@@ -4,10 +4,12 @@ import (
 	"compress/bzip2"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -86,6 +88,9 @@ func downloadAndDecompressBz2(url string) (*bz2DownloadResult, error) {
 	tmp.Close()
 	if err != nil {
 		os.Remove(tmpPath)
+		if isEOFLike(err) {
+			return nil, &corruptDownloadError{cause: err}
+		}
 		return nil, fmt.Errorf("copy/bunzip: %w", err)
 	}
 	if written > maxBz2DecompressedBytes {
@@ -111,4 +116,26 @@ func (*notFoundError) Error() string { return "demo not found (404)" }
 func isDemoNotFound(err error) bool {
 	_, ok := err.(*notFoundError)
 	return ok
+}
+
+// corruptDownloadError is returned when bz2 decompression hits unexpected EOF
+// (truncated file on Valve CDN, or network interruption mid-stream).
+type corruptDownloadError struct{ cause error }
+
+func (e *corruptDownloadError) Error() string { return fmt.Sprintf("corrupt download: %v", e.cause) }
+func (e *corruptDownloadError) Unwrap() error { return e.cause }
+
+// isCorruptDownload detects the corruptDownloadError sentinel.
+func isCorruptDownload(err error) bool {
+	var ce *corruptDownloadError
+	return errors.As(err, &ce)
+}
+
+// isEOFLike checks if an error is an unexpected EOF or truncated stream.
+func isEOFLike(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "unexpected EOF") || strings.Contains(msg, "truncated")
 }

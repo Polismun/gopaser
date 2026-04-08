@@ -28,7 +28,7 @@ type steamFetchResponse struct {
 
 // POST /steam/fetch-parse
 // Body: { url, sharecode }
-// Auth: Firebase Bearer → verify-steam-sync on Vercel (checks canAutoImportDemos)
+// Auth: Firebase Bearer → verify-steam-sync on Vercel (checks steamLink.steamId)
 //
 // Flow: download bz2 → bunzip → SHA-256 → hash dedup check → if new, parse + save.
 // Returns { skipped, id, hash, sizeBytes }.

@@ -182,6 +182,13 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 			errors = append(errors, syncErrEntry{Code: errCode, Detail: err.Error()})
 			if retryableCodes[errCode] && len(newFailed) < maxFailedSharecodes {
 				newFailed = append(newFailed, code)
+			} else {
+				// Non-retryable: mark any existing pending MatchDoc as failed
+				if ex, st, mid := matchExistsBySharecode(ctx, fs, uid, code); ex && st == "pending" {
+					if fErr := updateMatchDocFailed(ctx, fs, mid, errCode); fErr != nil {
+						log.Printf("[steam-sync] failed to mark match %s as failed: %v", mid, fErr)
+					}
+				}
 			}
 		} else {
 			imported++
@@ -216,12 +223,15 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 
 func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, code string) error {
 	// 0. Dedup: match by sharecode
-	exists, isParsed, existingMatchID := matchExistsBySharecode(ctx, fs, uid, code)
-	if exists && isParsed {
+	exists, matchStatus, existingMatchID := matchExistsBySharecode(ctx, fs, uid, code)
+	if exists && matchStatus == "parsed" {
 		return nil // fully processed
 	}
+	if exists && matchStatus == "failed" {
+		return nil // permanently failed, don't retry
+	}
 	// If exists but stuck pending (no demo), we'll re-process from download step
-	resumePending := exists && !isParsed
+	resumePending := exists && matchStatus == "pending"
 
 	// Dedup: demo by sharecode (cross-user)
 	demoHit, _ := findDemoBySharcode(ctx, fs, code)
@@ -319,6 +329,9 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 	if err != nil {
 		if isDemoNotFound(err) {
 			return fmt.Errorf("EXPIRED_DEMO:Valve CDN 404")
+		}
+		if isCorruptDownload(err) {
+			return fmt.Errorf("DOWNLOAD_CORRUPT:%v", err)
 		}
 		return fmt.Errorf("VPS_ERROR:download: %v", err)
 	}
