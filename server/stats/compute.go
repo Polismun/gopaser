@@ -10,13 +10,17 @@ func ComputeAllPlayerStats(pr *ParseResult, demoID string) *DemoStatsResult {
 	boundaries := BuildRoundBoundaries(pr.Ticks)
 	totalRounds := len(boundaries)
 
+	// Pre-compute round groupings once (used by multiple stat functions)
+	killsByRound := GroupKillsByRound(pr.Kills, boundaries)
+	damagesByRound := GroupDamagesByRound(pr.Damages, boundaries)
+
 	players := make([]PlayerGameStats, 0, len(pr.Stats))
 
 	for _, s := range pr.Stats {
-		damage := ComputeDamageStats(pr.Damages, boundaries, s.Name)
-		kill := ComputeKillStats(pr.Kills, boundaries, s.Name)
-		clutch := ComputeClutchStats(pr.Kills, pr.Ticks, boundaries, s.Name, s.Team)
-		kast := ComputeKAST(pr.Kills, pr.Ticks, boundaries, s.Name)
+		damage := ComputeDamageStats(pr.Damages, boundaries, damagesByRound, s.Name)
+		kill := ComputeKillStats(pr.Kills, boundaries, killsByRound, s.Name)
+		clutch := ComputeClutchStats(pr.Kills, pr.Ticks, boundaries, killsByRound, s.Name, s.Team)
+		kast := ComputeKAST(pr.Kills, pr.Ticks, boundaries, killsByRound, s.Name)
 		utility := ComputeUtilityStats(pr.GrenadeEvents, s.Name)
 		duels := ComputeDuels(pr.Kills, s.Name)
 		bomb := ComputeBombStats(pr.Ticks, boundaries, s.Name)
@@ -26,7 +30,7 @@ func ComputeAllPlayerStats(pr *ParseResult, demoID string) *DemoStatsResult {
 
 		hltvRating := ComputeHLTVRating(
 			s.Name, s.Team,
-			pr.Kills, pr.Ticks, boundaries,
+			pr.Kills, pr.Ticks, boundaries, killsByRound,
 			totalRounds,
 			s.Kills, s.Deaths,
 			damage.ADR, kast,
@@ -76,8 +80,7 @@ func ComputeAllPlayerStats(pr *ParseResult, demoID string) *DemoStatsResult {
 	}
 
 	// Per-round stats (winner, kill count, MVP)
-	killsByRound := GroupKillsByRound(pr.Kills, boundaries)
-	damagesByRound := GroupDamagesByRound(pr.Damages, boundaries)
+	// killsByRound and damagesByRound already computed above
 
 	rounds := make([]RoundStats, 0, len(boundaries))
 	for _, b := range boundaries {

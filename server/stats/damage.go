@@ -10,7 +10,7 @@ type DamageStatsResult struct {
 }
 
 // ComputeDamageStats computes ADR (clamped 100/victim/round) and damage breakdown.
-func ComputeDamageStats(damages []DamageEvent, boundaries []RoundBoundary, playerName string) DamageStatsResult {
+func ComputeDamageStats(damages []DamageEvent, boundaries []RoundBoundary, damagesByRound map[int][]DamageEvent, playerName string) DamageStatsResult {
 	totalRounds := len(boundaries)
 	totalDamage := 0
 	damageByHitgroup := make(map[string]int)
@@ -29,7 +29,6 @@ func ComputeDamageStats(damages []DamageEvent, boundaries []RoundBoundary, playe
 	}
 
 	// Clamped ADR: cap per-round damage at 100 per victim
-	damagesByRound := GroupDamagesByRound(damages, boundaries)
 	clampedTotal := 0
 	for _, roundDmgs := range damagesByRound {
 		perVictim := make(map[string]int)

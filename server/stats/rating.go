@@ -21,7 +21,7 @@ const (
 // ComputeHLTVRating computes the HLTV Rating 3.0 approximation for a single player.
 func ComputeHLTVRating(
 	playerName, playerTeam string,
-	kills []KillEvent, ticks []TickData, boundaries []RoundBoundary,
+	kills []KillEvent, ticks []TickData, boundaries []RoundBoundary, killsByRound map[int][]KillEvent,
 	totalRounds int,
 	rawKills, rawDeaths int,
 	adr, kastPercent float64,
@@ -29,8 +29,6 @@ func ComputeHLTVRating(
 	if totalRounds == 0 {
 		return 0
 	}
-
-	killsByRound := GroupKillsByRound(kills, boundaries)
 	roundSwing := computeRoundSwing(playerName, playerTeam, ticks, boundaries, killsByRound)
 	ecoKills := computeEcoKills(playerName, ticks, boundaries, killsByRound)
 	multiKillRate := computeMultiKillRate(playerName, killsByRound, totalRounds)

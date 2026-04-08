@@ -6,12 +6,10 @@ const tradeWindowTicks = 320 // ~5 seconds at 64 tick
 
 // ComputeKAST computes KAST% for a single player.
 // KAST = % of rounds with Kill, Assist, Survived, or Traded.
-func ComputeKAST(kills []KillEvent, ticks []TickData, boundaries []RoundBoundary, playerName string) float64 {
+func ComputeKAST(kills []KillEvent, ticks []TickData, boundaries []RoundBoundary, killsByRound map[int][]KillEvent, playerName string) float64 {
 	if len(boundaries) == 0 {
 		return 0
 	}
-
-	killsByRound := GroupKillsByRound(kills, boundaries)
 	contributing := 0
 
 	for _, b := range boundaries {

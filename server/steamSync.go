@@ -160,8 +160,15 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 		cursor = next
 	}
 
-	// Phase 2: process — retry previous failures first, then new
-	toProcess := append(sl.FailedSharecodes, discovered...)
+	// Phase 2: process — retry previous failures first, then new (dedup)
+	seen := make(map[string]bool, len(sl.FailedSharecodes)+len(discovered))
+	var toProcess []string
+	for _, c := range append(sl.FailedSharecodes, discovered...) {
+		if !seen[c] {
+			seen[c] = true
+			toProcess = append(toProcess, c)
+		}
+	}
 	var newFailed []string
 
 	for _, code := range toProcess {
@@ -288,7 +295,12 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 			Sharecode:  code,
 			GCMatchID:  gcResult.MatchID,
 			Map:        gcResult.Map,
-			TeamScores: [2]int{gcResult.TeamScores[0], gcResult.TeamScores[1]},
+			TeamScores: func() [2]int {
+				if len(gcResult.TeamScores) >= 2 {
+					return [2]int{gcResult.TeamScores[0], gcResult.TeamScores[1]}
+				}
+				return [2]int{}
+			}(),
 			Duration:   gcResult.Duration,
 			Players:    gcPlayers,
 			CreatedAt:  nowISO(),

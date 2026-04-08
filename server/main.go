@@ -65,6 +65,10 @@ func (rl *rateLimiter) allow(key string) bool {
 		}
 	}
 
+	if len(valid) == 0 {
+		delete(rl.requests, key)
+	}
+
 	if len(valid) >= rl.max {
 		rl.requests[key] = valid
 		return false
@@ -98,6 +102,9 @@ func main() {
 
 	// Cleanup stale temp files from previous crashes
 	cleanupTempFiles()
+
+	// Start periodic cache eviction
+	startCacheCleanup()
 
 	http.HandleFunc("/parse-multi", handleParseMulti)
 	http.HandleFunc("/parse", handleParse)
@@ -186,6 +193,22 @@ type demoReadCacheEntry struct {
 var demoReadCache sync.Map
 
 const demoReadCacheTTL = 30 * time.Second
+
+// startCacheCleanup periodically evicts expired entries from demoReadCache.
+func startCacheCleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	go func() {
+		for range ticker.C {
+			now := time.Now()
+			demoReadCache.Range(func(key, value any) bool {
+				if e, ok := value.(demoReadCacheEntry); ok && now.After(e.expiry) {
+					demoReadCache.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
+}
 
 // verifyDemoRead checks whether a demo can be read by calling /api/verify-demo-read.
 // Results are cached for 30 seconds keyed by demoId + auth header hash.

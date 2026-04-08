@@ -16,7 +16,7 @@ type KillStatsResult struct {
 }
 
 // ComputeKillStats computes HS%, weapon breakdown, opening kills/deaths, trades, multi-kills, flash assists.
-func ComputeKillStats(kills []KillEvent, boundaries []RoundBoundary, playerName string) KillStatsResult {
+func ComputeKillStats(kills []KillEvent, boundaries []RoundBoundary, killsByRound map[int][]KillEvent, playerName string) KillStatsResult {
 	var playerKills []KillEvent
 	for i := range kills {
 		if kills[i].KillerName == playerName {
@@ -57,7 +57,6 @@ func ComputeKillStats(kills []KillEvent, boundaries []RoundBoundary, playerName 
 	openingDeaths := 0
 	multiKillRounds := make(map[int]int)
 
-	killsByRound := GroupKillsByRound(kills, boundaries)
 	for _, roundKills := range killsByRound {
 		if len(roundKills) == 0 {
 			continue

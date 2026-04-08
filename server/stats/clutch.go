@@ -15,13 +15,11 @@ type ClutchStatsResult struct {
 }
 
 // ComputeClutchStats detects 1vN clutch attempts and wins, with per-event details.
-func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundBoundary, playerName, playerTeam string) ClutchStatsResult {
+func ComputeClutchStats(kills []KillEvent, ticks []TickData, boundaries []RoundBoundary, killsByRound map[int][]KillEvent, playerName, playerTeam string) ClutchStatsResult {
 	clutchWins := 0
 	clutchAttempts := 0
 	breakdown := make(map[int]ClutchRecord)
 	var events []ClutchEvent
-
-	killsByRound := GroupKillsByRound(kills, boundaries)
 
 	for _, b := range boundaries {
 		roundKills := killsByRound[b.RoundNumber]
