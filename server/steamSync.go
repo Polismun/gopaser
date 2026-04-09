@@ -16,9 +16,8 @@ import (
 
 	"sync"
 
-	"cs2-parser-server/stats"
-
 	"cloud.google.com/go/firestore"
+	"cs2-parser-server/stats"
 )
 
 const (
@@ -130,6 +129,14 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 		return syncResponse{Errors: []syncErrEntry{{Code: "NO_CREDENTIALS", Detail: "missing steamLink fields"}}}
 	}
 
+	// First sync ever: propagate existing matches from co-players
+	if sl.LastSyncAt == "" && sl.SteamID != "" {
+		propagated, _ := propagateForNewUser(ctx, fs, uid, sl.SteamID)
+		if propagated > 0 {
+			imported += propagated
+		}
+	}
+
 	// Decrypt auth code
 	authCode, err := decryptAuthCode(sl.AuthCodeEncrypted, sl.AuthCodeIV)
 	if err != nil {
@@ -200,7 +207,7 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 				newRetries[code] = attempts
 			} else {
 				// Max retries exceeded or non-retryable: mark MatchDoc as failed
-				if ex, st, mid := matchExistsBySharecode(ctx, fs, uid, code); ex && (st == "pending" || st == "discovered") {
+				if ex, _, st, mid := matchExistsBySharecode(ctx, fs, uid, code); ex && (st == "pending" || st == "discovered") {
 					reason := errCode
 					if attempts >= maxRetriesPerSharecode {
 						reason = errCode + "_MAX_RETRIES"
@@ -221,10 +228,10 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 	defer saveCancel()
 
 	updates := map[string]interface{}{
-		"lastSyncAt":            nowISO(),
+		"lastSyncAt":           nowISO(),
 		"lastSyncImportedCount": imported,
-		"failedSharecodes":      newFailed,
-		"failedRetries":         newRetries,
+		"failedSharecodes":     newFailed,
+		"failedRetries":        newRetries,
 	}
 	if cursor != sl.LatestSharecode {
 		updates["latestSharecode"] = cursor
@@ -244,15 +251,45 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 
 func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, code string) error {
 	// 0. Dedup: match by sharecode
-	exists, matchStatus, existingMatchID := matchExistsBySharecode(ctx, fs, uid, code)
-	if exists && matchStatus == "parsed" {
-		return nil // fully processed
+	docExists, userIsParticipant, matchStatus, existingMatchID := matchExistsBySharecode(ctx, fs, uid, code)
+
+	if docExists && userIsParticipant {
+		if matchStatus == "parsed" || matchStatus == "failed" {
+			return nil // already done for this user
+		}
 	}
-	if exists && matchStatus == "failed" {
-		return nil // permanently failed, don't retry
+
+	// Doc exists but user not yet a participant → just join the existing match
+	if docExists && !userIsParticipant {
+		if err := addParticipant(ctx, fs, existingMatchID, uid); err != nil {
+			log.Printf("[steam-sync] failed to add participant %s to match %s: %v", uid, existingMatchID, err)
+		} else {
+			log.Printf("[steam-sync] added user %s as participant to existing match %s", uid, existingMatchID)
+		}
+		// Create DemoDoc for this user if match is parsed and has a demo
+		if matchStatus == "parsed" {
+			snap, _ := fs.Collection("matches").Doc(existingMatchID).Get(ctx)
+			if snap != nil {
+				demoFileId, _ := snap.Data()["demoFileId"].(string)
+				if demoFileId != "" {
+					// Find demoHash from an existing DemoDoc
+					demoIter := fs.Collection("demos").Where("vpsFileId", "==", demoFileId).Limit(1).Documents(ctx)
+					if demoSnap, err := demoIter.Next(); err == nil {
+						hash, _ := demoSnap.Data()["demoHash"].(string)
+						recordedAt, _ := demoSnap.Data()["recordedAt"].(string)
+						if hash != "" {
+							handleDedupHitGo(ctx, fs, uid, code, hash, demoFileId, recordedAt, "", false)
+						}
+					}
+					demoIter.Stop()
+				}
+			}
+		}
+		return nil
 	}
+
 	// If exists but stuck pending/discovered (no demo), we'll re-process from download step
-	resumePending := exists && (matchStatus == "pending" || matchStatus == "discovered")
+	resumePending := docExists && userIsParticipant && (matchStatus == "pending" || matchStatus == "discovered")
 
 	// Skip expired matches early — check matchDate from existing MatchDoc before GC call
 	if resumePending {
@@ -341,24 +378,33 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 			}
 		}
 
+		// Build flat accountIds array for cross-user propagation queries
+		accountIds := make([]int64, 0, len(gcPlayers))
+		for _, p := range gcPlayers {
+			if p.AccountID > 0 {
+				accountIds = append(accountIds, p.AccountID)
+			}
+		}
+
 		pendingMatch = &MatchDoc{
-			ID:        matchDocID,
-			OwnerID:   uid,
-			Status:    "discovered",
-			Source:    "steam",
-			MatchDate: matchDate,
-			Sharecode: code,
-			GCMatchID: gcResult.MatchID,
-			Map:       gcResult.Map,
+			ID:              matchDocID,
+			ParticipantUids: []string{uid},
+			Status:          "discovered",
+			Source:     "steam",
+			MatchDate:  matchDate,
+			Sharecode:  code,
+			GCMatchID:  gcResult.MatchID,
+			Map:        gcResult.Map,
 			TeamScores: func() [2]int {
 				if len(gcResult.TeamScores) >= 2 {
 					return [2]int{gcResult.TeamScores[0], gcResult.TeamScores[1]}
 				}
 				return [2]int{}
 			}(),
-			Duration:  gcResult.Duration,
-			Players:   gcPlayers,
-			CreatedAt: nowISO(),
+			Duration:         gcResult.Duration,
+			Players:          gcPlayers,
+			PlayerAccountIds: accountIds,
+			CreatedAt:        nowISO(),
 		}
 		// Create discovered MatchDoc immediately (skeleton row in UI)
 		if err := createMatchDoc(ctx, fs, *pendingMatch); err != nil {
@@ -491,27 +537,27 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 
 	// DemoDoc
 	demoData := map[string]interface{}{
-		"id":             parsed.ID,
-		"vpsFileId":      parsed.ID,
-		"ownerId":        uid,
-		"demoHash":       dl.sha256Hex,
-		"source":         "steam-auto",
-		"steamSharecode": code,
-		"visibility":     "private",
-		"createdAt":      createdAt,
-		"mapName":        parseResult.MapName,
-		"teamCT":         teamCT,
-		"teamT":          teamT,
-		"scoreCT":        scoreCT,
-		"scoreT":         scoreT,
-		"tickRate":       parseResult.TickRate,
-		"totalRounds":    allStats.TotalRounds,
-		"fileSizeBytes":  parsed.SizeBytes,
+		"id":              parsed.ID,
+		"vpsFileId":       parsed.ID,
+		"ownerId":         uid,
+		"demoHash":        dl.sha256Hex,
+		"source":          "steam-auto",
+		"steamSharecode":  code,
+		"visibility":      "private",
+		"createdAt":       createdAt,
+		"mapName":         parseResult.MapName,
+		"teamCT":          teamCT,
+		"teamT":           teamT,
+		"scoreCT":         scoreCT,
+		"scoreT":          scoreT,
+		"tickRate":        parseResult.TickRate,
+		"totalRounds":     allStats.TotalRounds,
+		"fileSizeBytes":   parsed.SizeBytes,
 	}
 	if dl.recordedAt != "" {
 		demoData["recordedAt"] = dl.recordedAt
 	}
-	// Add players array
+	// Add players array (from parse stats — basic fields for DemoDoc)
 	var demoPlayers []map[string]interface{}
 	for _, s := range parseResult.Stats {
 		p := map[string]interface{}{
@@ -537,6 +583,63 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 	}
 	demoData["players"] = demoPlayers
 
+	// Build complete player metadata for demoHashes (GC data + parse + hltvRating + avatars)
+	// This is the source of truth for cross-user propagation
+	var hashPlayers []map[string]interface{}
+	if pendingMatch != nil {
+		for _, gp := range pendingMatch.Players {
+			hp := map[string]interface{}{
+				"accountId": gp.AccountID,
+				"name":      gp.Name,
+				"team":      gp.Team,
+				"kills":     gp.Kills,
+				"deaths":    gp.Deaths,
+				"assists":   gp.Assists,
+				"score":     gp.Score,
+				"mvps":      gp.MVPs,
+				"headshots": gp.Headshots,
+			}
+			if gp.Avatar != "" {
+				hp["avatar"] = gp.Avatar
+			}
+			if gp.RankID != 0 {
+				hp["rankId"] = gp.RankID
+			}
+			if gp.RankChange != 0 {
+				hp["rankChange"] = gp.RankChange
+			}
+			if gp.RankType != 0 {
+				hp["rankType"] = gp.RankType
+			}
+			if gp.Wins != 0 {
+				hp["wins"] = gp.Wins
+			}
+			// Merge enriched rank + hltvRating from parse
+			for _, e := range enrichments {
+				if e.AccountID == gp.AccountID {
+					if e.RankID != 0 {
+						hp["rankId"] = e.RankID
+					}
+					if e.RankType != 0 {
+						hp["rankType"] = e.RankType
+					}
+					if e.Wins != 0 {
+						hp["wins"] = e.Wins
+					}
+					if e.HLTVRating != 0 {
+						hp["hltvRating"] = e.HLTVRating
+					}
+					break
+				}
+			}
+			// Also add steamId string for dedup lookups
+			if gp.AccountID > 0 {
+				hp["steamId"] = accountIDToSteamID64(gp.AccountID)
+			}
+			hashPlayers = append(hashPlayers, hp)
+		}
+	}
+
 	if err := createDemoDoc(ctx, fs, parsed.ID, demoData); err != nil {
 		log.Printf("[steam-sync] DemoDoc write failed: %v", err)
 		return fmt.Errorf("VPS_ERROR:DemoDoc write: %v", err)
@@ -548,10 +651,15 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 		// Non-fatal: match still works without detailed stats
 	}
 
-	// demoHash
+	// demoHash — complete metadata for cross-user propagation
+	hashPlayersForStore := hashPlayers
+	if len(hashPlayersForStore) == 0 {
+		hashPlayersForStore = demoPlayers // fallback if pendingMatch was nil (resumePending)
+	}
 	hashData := map[string]interface{}{
 		"vpsFileId":     parsed.ID,
 		"mapName":       parseResult.MapName,
+		"serverName":    parseResult.ServerName,
 		"teamCT":        teamCT,
 		"teamT":         teamT,
 		"scoreCT":       scoreCT,
@@ -559,7 +667,8 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 		"tickRate":      parseResult.TickRate,
 		"totalRounds":   allStats.TotalRounds,
 		"fileSizeBytes": parsed.SizeBytes,
-		"players":       demoPlayers,
+		"duration":      gcResult.Duration,
+		"players":       hashPlayersForStore,
 	}
 	if dl.recordedAt != "" {
 		hashData["recordedAt"] = dl.recordedAt
@@ -579,6 +688,13 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 		PlayerEnrichments: enrichments,
 	}); err != nil {
 		log.Printf("[steam-sync] MatchDoc enrich failed: %v", err)
+	}
+
+	// Propagate to other site users in this match
+	if pendingMatch != nil {
+		pendingMatch.Status = "parsed"
+		pendingMatch.DemoFileID = parsed.ID
+		propagateToCoPlayers(ctx, fs, matchDocID, *pendingMatch, dl.sha256Hex, parsed.ID, dl.recordedAt)
 	}
 
 	return nil
@@ -661,21 +777,32 @@ func handleDedupHitGo(ctx context.Context, fs *firestore.Client, uid, code, hash
 		scoreCT, scoreT := intVal(meta, "scoreCT"), intVal(meta, "scoreT")
 
 		newMatchID := generateSyncUUID()
+		// Build flat accountIds for propagation queries
+		var dedupAccountIds []int64
+		for _, p := range matchPlayers {
+			if p.AccountID > 0 {
+				dedupAccountIds = append(dedupAccountIds, p.AccountID)
+			}
+		}
+
 		newMatch := MatchDoc{
-			ID:          newMatchID,
-			OwnerID:     uid,
-			Status:      "parsed",
-			Source:      "steam",
-			MatchDate:   ra,
-			Sharecode:   code,
-			Map:         strVal(meta, "mapName"),
-			TeamScores:  [2]int{scoreCT, scoreT},
-			Players:     matchPlayers,
-			DemoFileID:  vpsFileID,
-			DemoStatsID: vpsFileID,
-			TeamCT:      strVal(meta, "teamCT"),
-			TeamT:       strVal(meta, "teamT"),
-			CreatedAt:   nowISO(),
+			ID:               newMatchID,
+			ParticipantUids:  []string{uid},
+			Status:           "parsed",
+			Source:           "steam",
+			MatchDate:        ra,
+			Sharecode:        code,
+			Map:              strVal(meta, "mapName"),
+			TeamScores:       [2]int{scoreCT, scoreT},
+			Duration:         intVal(meta, "duration"),
+			Players:          matchPlayers,
+			PlayerAccountIds: dedupAccountIds,
+			DemoFileID:       vpsFileID,
+			DemoStatsID:      vpsFileID,
+			TeamCT:           strVal(meta, "teamCT"),
+			TeamT:            strVal(meta, "teamT"),
+			ServerName:       strVal(meta, "serverName"),
+			CreatedAt:        nowISO(),
 		}
 		if err := createMatchDoc(ctx, fs, newMatch); err != nil {
 			log.Printf("[steam-sync] dedup MatchDoc create failed: %v", err)
@@ -688,27 +815,27 @@ func handleDedupHitGo(ctx context.Context, fs *firestore.Client, uid, code, hash
 // ── GC bot internal call ──
 
 type gcBotResult struct {
-	URL        string        `json:"url"`
-	Matchtime  int           `json:"matchtime"`
-	MatchID    string        `json:"matchId"`
-	Map        string        `json:"map"`
-	Duration   int           `json:"duration"`
-	TeamScores [2]int        `json:"teamScores"`
-	Players    []gcBotPlayer `json:"players"`
+	URL        string         `json:"url"`
+	Matchtime  int            `json:"matchtime"`
+	MatchID    string         `json:"matchId"`
+	Map        string         `json:"map"`
+	Duration   int            `json:"duration"`
+	TeamScores [2]int         `json:"teamScores"`
+	Players    []gcBotPlayer  `json:"players"`
 }
 
 type gcBotPlayer struct {
-	AccountID  int64 `json:"accountId"`
-	Kills      int   `json:"kills"`
-	Deaths     int   `json:"deaths"`
-	Assists    int   `json:"assists"`
-	Score      int   `json:"score"`
-	MVPs       int   `json:"mvps"`
-	Headshots  int   `json:"headshots"`
-	RankID     int   `json:"rankId"`
-	RankChange int   `json:"rankChange"`
-	RankType   int   `json:"rankType"`
-	Wins       int   `json:"wins"`
+	AccountID  int64  `json:"accountId"`
+	Kills      int    `json:"kills"`
+	Deaths     int    `json:"deaths"`
+	Assists    int    `json:"assists"`
+	Score      int    `json:"score"`
+	MVPs       int    `json:"mvps"`
+	Headshots  int    `json:"headshots"`
+	RankID     int    `json:"rankId"`
+	RankChange int    `json:"rankChange"`
+	RankType   int    `json:"rankType"`
+	Wins       int    `json:"wins"`
 }
 
 func callGCBotInternal(matchID, reservationID uint64, tvPort uint16) (*gcBotResult, error) {
@@ -807,21 +934,33 @@ func buildMatchPlayersFromMeta(meta map[string]interface{}) []MatchPlayer {
 		if !ok {
 			continue
 		}
-		sid := strVal(p, "steamId")
-		accountID := int64(0)
-		if sid != "" {
-			accountID = steamID64ToAccountID(sid)
+		// accountId can be stored directly or derived from steamId
+		accountID := int64Val(p, "accountId")
+		if accountID == 0 {
+			if sid := strVal(p, "steamId"); sid != "" {
+				accountID = steamID64ToAccountID(sid)
+			}
 		}
 		mp := MatchPlayer{
-			AccountID: accountID,
-			Name:      strVal(p, "name"),
-			Team:      strVal(p, "team"),
-			Kills:     intVal(p, "kills"),
-			Deaths:    intVal(p, "deaths"),
-			Assists:   intVal(p, "assists"),
-			RankID:    intVal(p, "rank"),
-			RankType:  intVal(p, "rankType"),
-			Wins:      intVal(p, "wins"),
+			AccountID:  accountID,
+			Name:       strVal(p, "name"),
+			Avatar:     strVal(p, "avatar"),
+			Team:       strVal(p, "team"),
+			Kills:      intVal(p, "kills"),
+			Deaths:     intVal(p, "deaths"),
+			Assists:    intVal(p, "assists"),
+			Score:      intVal(p, "score"),
+			MVPs:       intVal(p, "mvps"),
+			Headshots:  intVal(p, "headshots"),
+			RankID:     intVal(p, "rankId"),
+			RankChange: intVal(p, "rankChange"),
+			RankType:   intVal(p, "rankType"),
+			Wins:       intVal(p, "wins"),
+			HLTVRating: floatVal(p, "hltvRating"),
+		}
+		// Fallback: old metadata stored rank as "rank" not "rankId"
+		if mp.RankID == 0 {
+			mp.RankID = intVal(p, "rank")
 		}
 		result = append(result, mp)
 	}
@@ -836,6 +975,30 @@ func intVal(m map[string]interface{}, key string) int {
 		return int(v)
 	case int:
 		return v
+	}
+	return 0
+}
+
+func int64Val(m map[string]interface{}, key string) int64 {
+	switch v := m[key].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return 0
+}
+
+func floatVal(m map[string]interface{}, key string) float64 {
+	switch v := m[key].(type) {
+	case float64:
+		return v
+	case int64:
+		return float64(v)
+	case int:
+		return float64(v)
 	}
 	return 0
 }
@@ -939,9 +1102,18 @@ func cleanupExpiredMatches(ctx context.Context, fs *firestore.Client) {
 			if md >= cutoff {
 				continue // not expired
 			}
-			ownerID, _ := data["ownerId"].(string)
 			sharecode, _ := data["sharecode"].(string)
-			if ownerID != "" && sharecode != "" {
+			if sharecode == "" {
+				continue
+			}
+			// Collect for all participants (new model) + legacy ownerId
+			if uids, ok := data["participantUids"].([]interface{}); ok {
+				for _, u := range uids {
+					if uid := fmt.Sprintf("%v", u); uid != "" {
+						expiredByOwner[uid] = append(expiredByOwner[uid], sharecode)
+					}
+				}
+			} else if ownerID, ok := data["ownerId"].(string); ok && ownerID != "" {
 				expiredByOwner[ownerID] = append(expiredByOwner[ownerID], sharecode)
 			}
 			if _, err := doc.Ref.Delete(ctx); err == nil {

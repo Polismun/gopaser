@@ -29,8 +29,8 @@ type MatchPlayer struct {
 
 // MatchDoc mirrors the TS MatchDoc type.
 type MatchDoc struct {
-	ID          string        `firestore:"id" json:"id"`
-	OwnerID     string        `firestore:"ownerId" json:"ownerId"`
+	ID              string   `firestore:"id" json:"id"`
+	ParticipantUids []string `firestore:"participantUids" json:"participantUids"`
 	Status      string        `firestore:"status" json:"status"`
 	Source      string        `firestore:"source" json:"source"`
 	MatchDate   string        `firestore:"matchDate" json:"matchDate"`
@@ -39,7 +39,8 @@ type MatchDoc struct {
 	Map         string        `firestore:"map" json:"map"`
 	TeamScores  [2]int        `firestore:"teamScores" json:"teamScores"`
 	Duration    int           `firestore:"duration,omitempty" json:"duration,omitempty"`
-	Players     []MatchPlayer `firestore:"players" json:"players"`
+	Players          []MatchPlayer `firestore:"players" json:"players"`
+	PlayerAccountIds []int64       `firestore:"playerAccountIds,omitempty" json:"playerAccountIds,omitempty"`
 	DemoFileID  string        `firestore:"demoFileId,omitempty" json:"demoFileId,omitempty"`
 	DemoStatsID string        `firestore:"demoStatsId,omitempty" json:"demoStatsId,omitempty"`
 	TeamCT      string        `firestore:"teamCT,omitempty" json:"teamCT,omitempty"`
@@ -137,11 +138,10 @@ type playerEnrichment struct {
 	HLTVRating float64
 }
 
-// matchExistsBySharecode checks if a MatchDoc with this sharecode exists for the user.
-// Returns (exists, status string, matchDocID).
-func matchExistsBySharecode(ctx context.Context, fs *firestore.Client, ownerID, sharecode string) (bool, string, string) {
+// matchExistsBySharecode checks if a MatchDoc with this sharecode exists.
+// Returns (docExists, userIsParticipant, status, matchDocID).
+func matchExistsBySharecode(ctx context.Context, fs *firestore.Client, uid, sharecode string) (bool, bool, string, string) {
 	iter := fs.Collection("matches").
-		Where("ownerId", "==", ownerID).
 		Where("sharecode", "==", sharecode).
 		Limit(1).
 		Documents(ctx)
@@ -149,10 +149,37 @@ func matchExistsBySharecode(ctx context.Context, fs *firestore.Client, ownerID, 
 
 	doc, err := iter.Next()
 	if err != nil {
-		return false, "", ""
+		return false, false, "", ""
 	}
 	status, _ := doc.DataAt("status")
-	return true, fmt.Sprintf("%v", status), doc.Ref.ID
+	statusStr := fmt.Sprintf("%v", status)
+
+	// Check if user is already a participant
+	isParticipant := false
+	if uids, ok := doc.Data()["participantUids"].([]interface{}); ok {
+		for _, u := range uids {
+			if fmt.Sprintf("%v", u) == uid {
+				isParticipant = true
+				break
+			}
+		}
+	}
+	// Backward compat: check ownerId for old docs
+	if !isParticipant {
+		if oid, ok := doc.Data()["ownerId"].(string); ok && oid == uid {
+			isParticipant = true
+		}
+	}
+
+	return true, isParticipant, statusStr, doc.Ref.ID
+}
+
+// addParticipant adds a uid to an existing MatchDoc's participantUids via ArrayUnion.
+func addParticipant(ctx context.Context, fs *firestore.Client, matchDocID, uid string) error {
+	_, err := fs.Collection("matches").Doc(matchDocID).Update(ctx, []firestore.Update{
+		{Path: "participantUids", Value: firestore.ArrayUnion(uid)},
+	})
+	return err
 }
 
 // findDemoBySharcode finds a DemoDoc by steamSharecode (any owner).
