@@ -180,7 +180,10 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 	}
 	newRetries := make(map[string]int)
 
-	for _, code := range toProcess {
+	for i, code := range toProcess {
+		if i > 0 {
+			time.Sleep(3 * time.Second)
+		}
 		err := processSharecode(ctx, fs, uid, idToken, code)
 		if err != nil {
 			errCode := "UNKNOWN"
