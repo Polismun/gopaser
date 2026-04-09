@@ -358,8 +358,14 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 	}
 	defer os.Remove(dl.tmpPath)
 
-	// Hash dedup
-	hashExists, existingFileID, _ := checkDemoHashViaVercel(dl.sha256Hex, idToken)
+	// Hash dedup (Vercel if user token available, Firestore direct for cron)
+	var hashExists bool
+	var existingFileID string
+	if idToken != "" {
+		hashExists, existingFileID, _ = checkDemoHashViaVercel(dl.sha256Hex, idToken)
+	} else {
+		hashExists, existingFileID, _ = checkDemoHashLocal(ctx, fs, dl.sha256Hex)
+	}
 	if hashExists {
 		return handleDedupHitGo(ctx, fs, uid, code, dl.sha256Hex, existingFileID, dl.recordedAt, matchDocID, false)
 	}
@@ -797,4 +803,72 @@ func intVal(m map[string]interface{}, key string) int {
 		return v
 	}
 	return 0
+}
+
+// startSteamCron launches a background goroutine that syncs all Steam-linked users every 30 minutes.
+func startSteamCron() {
+	go func() {
+		// Run once at startup (10s delay to let Firestore init)
+		time.Sleep(10 * time.Second)
+		cronSyncAll()
+
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			cronSyncAll()
+		}
+	}()
+	log.Println("[steam-cron] scheduled every 30 minutes (first run in 10s)")
+}
+
+// cronSyncAll queries all users with Steam credentials and runs sync for each.
+func cronSyncAll() {
+	fs := getFirestoreClient()
+	if fs == nil {
+		log.Println("[steam-cron] Firestore not configured, skipping")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	defer cancel()
+
+	// Query users with encrypted auth code (= credentials set)
+	iter := fs.Collection("users").Where("steamLink.authCodeEncrypted", "!=", "").Documents(ctx)
+	defer iter.Stop()
+
+	var uids []string
+	for {
+		doc, err := iter.Next()
+		if err != nil {
+			break
+		}
+		uids = append(uids, doc.Ref.ID)
+	}
+
+	if len(uids) == 0 {
+		log.Println("[steam-cron] no users with Steam credentials")
+		return
+	}
+
+	log.Printf("[steam-cron] starting sync for %d user(s)", len(uids))
+
+	for i, uid := range uids {
+		if i > 0 {
+			time.Sleep(5 * time.Second)
+		}
+
+		// Respect per-user mutex — skip if manual sync is running
+		if _, loaded := activeSyncs.LoadOrStore(uid, true); loaded {
+			log.Printf("[steam-cron] uid=%s already syncing, skipped", uid)
+			continue
+		}
+
+		result := runSync(ctx, fs, uid, "")
+		activeSyncs.Delete(uid)
+
+		log.Printf("[steam-cron] uid=%s discovered=%d imported=%d errors=%d",
+			uid, result.Discovered, result.Imported, len(result.Errors))
+	}
+
+	log.Println("[steam-cron] done")
 }

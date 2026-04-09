@@ -106,6 +106,9 @@ func main() {
 	// Start periodic cache eviction
 	startCacheCleanup()
 
+	// Start Steam auto-sync cron (every 30 min)
+	startSteamCron()
+
 	http.HandleFunc("/parse-multi", handleParseMulti)
 	http.HandleFunc("/parse", handleParse)
 	http.HandleFunc("/steam/fetch-parse", handleSteamFetchParse)

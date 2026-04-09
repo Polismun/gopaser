@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"cloud.google.com/go/firestore"
 )
 
 // checkDemoHashResponse mirrors the Vercel /api/demo-hash-check response shape
@@ -51,4 +54,17 @@ func checkDemoHashViaVercel(hash, authHeader string) (bool, string, error) {
 		return false, "", fmt.Errorf("hash check decode: %w", err)
 	}
 	return out.Exists, out.VpsFileId, nil
+}
+
+// checkDemoHashLocal queries Firestore demoHashes/{hash} directly.
+// Used by cron sync when no user idToken is available.
+func checkDemoHashLocal(ctx context.Context, fs *firestore.Client, hash string) (bool, string, error) {
+	snap, err := fs.Collection("demoHashes").Doc(hash).Get(ctx)
+	if err != nil {
+		// NotFound → hash is new
+		return false, "", nil
+	}
+	data := snap.Data()
+	vpsFileId, _ := data["vpsFileId"].(string)
+	return true, vpsFileId, nil
 }
