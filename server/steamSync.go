@@ -200,7 +200,7 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 				newRetries[code] = attempts
 			} else {
 				// Max retries exceeded or non-retryable: mark MatchDoc as failed
-				if ex, st, mid := matchExistsBySharecode(ctx, fs, uid, code); ex && st == "pending" {
+				if ex, st, mid := matchExistsBySharecode(ctx, fs, uid, code); ex && (st == "pending" || st == "discovered") {
 					reason := errCode
 					if attempts >= maxRetriesPerSharecode {
 						reason = errCode + "_MAX_RETRIES"
@@ -251,8 +251,8 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 	if exists && matchStatus == "failed" {
 		return nil // permanently failed, don't retry
 	}
-	// If exists but stuck pending (no demo), we'll re-process from download step
-	resumePending := exists && matchStatus == "pending"
+	// If exists but stuck pending/discovered (no demo), we'll re-process from download step
+	resumePending := exists && (matchStatus == "pending" || matchStatus == "discovered")
 
 	// Dedup: demo by sharecode (cross-user)
 	demoHit, _ := findDemoBySharcode(ctx, fs, code)
@@ -854,7 +854,7 @@ func cronSyncAll() {
 	defer cancel()
 
 	// Cleanup: delete discovered MatchDocs older than 31 days
-	cleanupExpiredDiscovered(ctx, fs)
+	cleanupExpiredMatches(ctx, fs)
 
 	// Query users with encrypted auth code (= credentials set)
 	iter := fs.Collection("users").Where("steamLink.authCodeEncrypted", "!=", "").Documents(ctx)
@@ -897,26 +897,73 @@ func cronSyncAll() {
 	log.Println("[steam-cron] done")
 }
 
-// cleanupExpiredDiscovered deletes MatchDocs with status "discovered" older than 31 days.
-func cleanupExpiredDiscovered(ctx context.Context, fs *firestore.Client) {
+// cleanupExpiredMatches deletes discovered and failed MatchDocs older than 31 days,
+// and removes their sharecodes from the owner's failedSharecodes list.
+func cleanupExpiredMatches(ctx context.Context, fs *firestore.Client) {
 	cutoff := time.Now().Add(-31 * 24 * time.Hour).Format(time.RFC3339)
-	iter := fs.Collection("matches").
-		Where("status", "==", "discovered").
-		Where("matchDate", "<", cutoff).
-		Documents(ctx)
-	defer iter.Stop()
 
-	deleted := 0
-	for {
-		doc, err := iter.Next()
-		if err != nil {
-			break
+	// Collect expired sharecodes per owner for user doc cleanup
+	expiredByOwner := make(map[string][]string)
+
+	for _, status := range []string{"discovered", "failed"} {
+		iter := fs.Collection("matches").
+			Where("status", "==", status).
+			Where("matchDate", "<", cutoff).
+			Documents(ctx)
+
+		deleted := 0
+		for {
+			doc, err := iter.Next()
+			if err != nil {
+				break
+			}
+			data := doc.Data()
+			ownerID, _ := data["ownerId"].(string)
+			sharecode, _ := data["sharecode"].(string)
+			if ownerID != "" && sharecode != "" {
+				expiredByOwner[ownerID] = append(expiredByOwner[ownerID], sharecode)
+			}
+			if _, err := doc.Ref.Delete(ctx); err == nil {
+				deleted++
+			}
 		}
-		if _, err := doc.Ref.Delete(ctx); err == nil {
-			deleted++
+		iter.Stop()
+		if deleted > 0 {
+			log.Printf("[steam-cron] cleaned up %d expired %s matches", deleted, status)
 		}
 	}
-	if deleted > 0 {
-		log.Printf("[steam-cron] cleaned up %d expired discovered matches", deleted)
+
+	// Remove expired sharecodes from each user's failedSharecodes
+	for uid, codes := range expiredByOwner {
+		expiredSet := make(map[string]bool, len(codes))
+		for _, c := range codes {
+			expiredSet[c] = true
+		}
+
+		sl, err := readSteamLink(ctx, fs, uid)
+		if err != nil {
+			continue
+		}
+		var cleaned []string
+		cleanedRetries := make(map[string]int)
+		for _, c := range sl.FailedSharecodes {
+			if !expiredSet[c] {
+				cleaned = append(cleaned, c)
+				if r, ok := sl.FailedRetries[c]; ok {
+					cleanedRetries[c] = r
+				}
+			}
+		}
+		if len(cleaned) < len(sl.FailedSharecodes) {
+			updates := map[string]interface{}{
+				"failedSharecodes": cleaned,
+				"failedRetries":    cleanedRetries,
+			}
+			if err := updateSteamLink(ctx, fs, uid, updates); err != nil {
+				log.Printf("[steam-cron] failed to clean failedSharecodes for %s: %v", uid, err)
+			} else {
+				log.Printf("[steam-cron] removed %d expired sharecodes from user %s", len(sl.FailedSharecodes)-len(cleaned), uid)
+			}
+		}
 	}
 }
