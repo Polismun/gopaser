@@ -282,8 +282,9 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 	}
 	profileMap := fetchPlayerProfiles(steamIDs)
 
-	// 2. Create MatchDoc pending (skip if resuming a stuck pending)
+	// 2. Prepare MatchDoc pending (created after download succeeds to avoid phantom entries)
 	var matchDocID string
+	var pendingMatch *MatchDoc
 	if resumePending {
 		matchDocID = existingMatchID
 		log.Printf("[steam-sync] resuming stuck pending match %s for sharecode %s", matchDocID, code)
@@ -316,10 +317,10 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 			}
 		}
 
-		pendingMatch := MatchDoc{
+		pendingMatch = &MatchDoc{
 			ID:         matchDocID,
 			OwnerID:    uid,
-			Status:     "pending",
+			Status:     "discovered",
 			Source:     "steam",
 			MatchDate:  matchDate,
 			Sharecode:  code,
@@ -335,8 +336,9 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 			Players:    gcPlayers,
 			CreatedAt:  nowISO(),
 		}
-		if err := createMatchDoc(ctx, fs, pendingMatch); err != nil {
-			log.Printf("[steam-sync] failed to create pending MatchDoc: %v", err)
+		// Create discovered MatchDoc immediately (skeleton row in UI)
+		if err := createMatchDoc(ctx, fs, *pendingMatch); err != nil {
+			log.Printf("[steam-sync] failed to create discovered MatchDoc: %v", err)
 		}
 	}
 
@@ -357,6 +359,15 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 		return fmt.Errorf("VPS_ERROR:download: %v", err)
 	}
 	defer os.Remove(dl.tmpPath)
+
+	// Download succeeded — upgrade discovered → pending
+	if pendingMatch != nil && matchDocID != "" {
+		if _, err := fs.Collection("matches").Doc(matchDocID).Update(ctx, []firestore.Update{
+			{Path: "status", Value: "pending"},
+		}); err != nil {
+			log.Printf("[steam-sync] failed to upgrade MatchDoc to pending: %v", err)
+		}
+	}
 
 	// Hash dedup (Vercel if user token available, Firestore direct for cron)
 	var hashExists bool
