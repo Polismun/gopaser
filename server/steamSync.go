@@ -16,8 +16,9 @@ import (
 
 	"sync"
 
-	"cloud.google.com/go/firestore"
 	"cs2-parser-server/stats"
+
+	"cloud.google.com/go/firestore"
 )
 
 const (
@@ -220,10 +221,10 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 	defer saveCancel()
 
 	updates := map[string]interface{}{
-		"lastSyncAt":           nowISO(),
+		"lastSyncAt":            nowISO(),
 		"lastSyncImportedCount": imported,
-		"failedSharecodes":     newFailed,
-		"failedRetries":        newRetries,
+		"failedSharecodes":      newFailed,
+		"failedRetries":         newRetries,
 	}
 	if cursor != sl.LatestSharecode {
 		updates["latestSharecode"] = cursor
@@ -298,6 +299,15 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 			matchDate = time.Unix(int64(gcResult.Matchtime), 0).UTC().Format(time.RFC3339)
 		}
 
+		// Skip matches older than 31 days (Valve CDN expires demos ~14-30 days)
+		if gcResult.Matchtime > 0 {
+			age := time.Since(time.Unix(int64(gcResult.Matchtime), 0))
+			if age > 31*24*time.Hour {
+				log.Printf("[steam-sync] skipping expired match %s (%.0f days old)", code, age.Hours()/24)
+				return fmt.Errorf("EXPIRED_DEMO:match older than 31 days")
+			}
+		}
+
 		gcPlayers := make([]MatchPlayer, len(gcResult.Players))
 		for i, p := range gcResult.Players {
 			sid := accountIDToSteamID64(p.AccountID)
@@ -318,23 +328,23 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 		}
 
 		pendingMatch = &MatchDoc{
-			ID:         matchDocID,
-			OwnerID:    uid,
-			Status:     "discovered",
-			Source:     "steam",
-			MatchDate:  matchDate,
-			Sharecode:  code,
-			GCMatchID:  gcResult.MatchID,
-			Map:        gcResult.Map,
+			ID:        matchDocID,
+			OwnerID:   uid,
+			Status:    "discovered",
+			Source:    "steam",
+			MatchDate: matchDate,
+			Sharecode: code,
+			GCMatchID: gcResult.MatchID,
+			Map:       gcResult.Map,
 			TeamScores: func() [2]int {
 				if len(gcResult.TeamScores) >= 2 {
 					return [2]int{gcResult.TeamScores[0], gcResult.TeamScores[1]}
 				}
 				return [2]int{}
 			}(),
-			Duration:   gcResult.Duration,
-			Players:    gcPlayers,
-			CreatedAt:  nowISO(),
+			Duration:  gcResult.Duration,
+			Players:   gcPlayers,
+			CreatedAt: nowISO(),
 		}
 		// Create discovered MatchDoc immediately (skeleton row in UI)
 		if err := createMatchDoc(ctx, fs, *pendingMatch); err != nil {
@@ -467,22 +477,22 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 
 	// DemoDoc
 	demoData := map[string]interface{}{
-		"id":              parsed.ID,
-		"vpsFileId":       parsed.ID,
-		"ownerId":         uid,
-		"demoHash":        dl.sha256Hex,
-		"source":          "steam-auto",
-		"steamSharecode":  code,
-		"visibility":      "private",
-		"createdAt":       createdAt,
-		"mapName":         parseResult.MapName,
-		"teamCT":          teamCT,
-		"teamT":           teamT,
-		"scoreCT":         scoreCT,
-		"scoreT":          scoreT,
-		"tickRate":        parseResult.TickRate,
-		"totalRounds":     allStats.TotalRounds,
-		"fileSizeBytes":   parsed.SizeBytes,
+		"id":             parsed.ID,
+		"vpsFileId":      parsed.ID,
+		"ownerId":        uid,
+		"demoHash":       dl.sha256Hex,
+		"source":         "steam-auto",
+		"steamSharecode": code,
+		"visibility":     "private",
+		"createdAt":      createdAt,
+		"mapName":        parseResult.MapName,
+		"teamCT":         teamCT,
+		"teamT":          teamT,
+		"scoreCT":        scoreCT,
+		"scoreT":         scoreT,
+		"tickRate":       parseResult.TickRate,
+		"totalRounds":    allStats.TotalRounds,
+		"fileSizeBytes":  parsed.SizeBytes,
 	}
 	if dl.recordedAt != "" {
 		demoData["recordedAt"] = dl.recordedAt
@@ -638,20 +648,20 @@ func handleDedupHitGo(ctx context.Context, fs *firestore.Client, uid, code, hash
 
 		newMatchID := generateSyncUUID()
 		newMatch := MatchDoc{
-			ID:         newMatchID,
-			OwnerID:    uid,
-			Status:     "parsed",
-			Source:     "steam",
-			MatchDate:  ra,
-			Sharecode:  code,
-			Map:        strVal(meta, "mapName"),
-			TeamScores: [2]int{scoreCT, scoreT},
-			Players:    matchPlayers,
-			DemoFileID: vpsFileID,
+			ID:          newMatchID,
+			OwnerID:     uid,
+			Status:      "parsed",
+			Source:      "steam",
+			MatchDate:   ra,
+			Sharecode:   code,
+			Map:         strVal(meta, "mapName"),
+			TeamScores:  [2]int{scoreCT, scoreT},
+			Players:     matchPlayers,
+			DemoFileID:  vpsFileID,
 			DemoStatsID: vpsFileID,
-			TeamCT:     strVal(meta, "teamCT"),
-			TeamT:      strVal(meta, "teamT"),
-			CreatedAt:  nowISO(),
+			TeamCT:      strVal(meta, "teamCT"),
+			TeamT:       strVal(meta, "teamT"),
+			CreatedAt:   nowISO(),
 		}
 		if err := createMatchDoc(ctx, fs, newMatch); err != nil {
 			log.Printf("[steam-sync] dedup MatchDoc create failed: %v", err)
@@ -664,27 +674,27 @@ func handleDedupHitGo(ctx context.Context, fs *firestore.Client, uid, code, hash
 // ── GC bot internal call ──
 
 type gcBotResult struct {
-	URL        string         `json:"url"`
-	Matchtime  int            `json:"matchtime"`
-	MatchID    string         `json:"matchId"`
-	Map        string         `json:"map"`
-	Duration   int            `json:"duration"`
-	TeamScores [2]int         `json:"teamScores"`
-	Players    []gcBotPlayer  `json:"players"`
+	URL        string        `json:"url"`
+	Matchtime  int           `json:"matchtime"`
+	MatchID    string        `json:"matchId"`
+	Map        string        `json:"map"`
+	Duration   int           `json:"duration"`
+	TeamScores [2]int        `json:"teamScores"`
+	Players    []gcBotPlayer `json:"players"`
 }
 
 type gcBotPlayer struct {
-	AccountID  int64  `json:"accountId"`
-	Kills      int    `json:"kills"`
-	Deaths     int    `json:"deaths"`
-	Assists    int    `json:"assists"`
-	Score      int    `json:"score"`
-	MVPs       int    `json:"mvps"`
-	Headshots  int    `json:"headshots"`
-	RankID     int    `json:"rankId"`
-	RankChange int    `json:"rankChange"`
-	RankType   int    `json:"rankType"`
-	Wins       int    `json:"wins"`
+	AccountID  int64 `json:"accountId"`
+	Kills      int   `json:"kills"`
+	Deaths     int   `json:"deaths"`
+	Assists    int   `json:"assists"`
+	Score      int   `json:"score"`
+	MVPs       int   `json:"mvps"`
+	Headshots  int   `json:"headshots"`
+	RankID     int   `json:"rankId"`
+	RankChange int   `json:"rankChange"`
+	RankType   int   `json:"rankType"`
+	Wins       int   `json:"wins"`
 }
 
 func callGCBotInternal(matchID, reservationID uint64, tvPort uint16) (*gcBotResult, error) {
@@ -843,6 +853,9 @@ func cronSyncAll() {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
 
+	// Cleanup: delete discovered MatchDocs older than 31 days
+	cleanupExpiredDiscovered(ctx, fs)
+
 	// Query users with encrypted auth code (= credentials set)
 	iter := fs.Collection("users").Where("steamLink.authCodeEncrypted", "!=", "").Documents(ctx)
 	defer iter.Stop()
@@ -882,4 +895,28 @@ func cronSyncAll() {
 	}
 
 	log.Println("[steam-cron] done")
+}
+
+// cleanupExpiredDiscovered deletes MatchDocs with status "discovered" older than 31 days.
+func cleanupExpiredDiscovered(ctx context.Context, fs *firestore.Client) {
+	cutoff := time.Now().Add(-31 * 24 * time.Hour).Format(time.RFC3339)
+	iter := fs.Collection("matches").
+		Where("status", "==", "discovered").
+		Where("matchDate", "<", cutoff).
+		Documents(ctx)
+	defer iter.Stop()
+
+	deleted := 0
+	for {
+		doc, err := iter.Next()
+		if err != nil {
+			break
+		}
+		if _, err := doc.Ref.Delete(ctx); err == nil {
+			deleted++
+		}
+	}
+	if deleted > 0 {
+		log.Printf("[steam-cron] cleaned up %d expired discovered matches", deleted)
+	}
 }
