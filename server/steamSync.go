@@ -254,6 +254,20 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 	// If exists but stuck pending/discovered (no demo), we'll re-process from download step
 	resumePending := exists && (matchStatus == "pending" || matchStatus == "discovered")
 
+	// Skip expired matches early — check matchDate from existing MatchDoc before GC call
+	if resumePending {
+		if snap, err := fs.Collection("matches").Doc(existingMatchID).Get(ctx); err == nil {
+			if md, ok := snap.Data()["matchDate"].(string); ok {
+				if t, err := time.Parse(time.RFC3339, md); err == nil {
+					if time.Since(t) > 31*24*time.Hour {
+						log.Printf("[steam-sync] skipping expired resumed match %s (%.0f days old)", code, time.Since(t).Hours()/24)
+						return fmt.Errorf("EXPIRED_DEMO:match older than 31 days")
+					}
+				}
+			}
+		}
+	}
+
 	// Dedup: demo by sharecode (cross-user)
 	demoHit, _ := findDemoBySharcode(ctx, fs, code)
 	if demoHit != nil {
