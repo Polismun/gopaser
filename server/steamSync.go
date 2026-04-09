@@ -920,9 +920,9 @@ func cleanupExpiredMatches(ctx context.Context, fs *firestore.Client) {
 	expiredByOwner := make(map[string][]string)
 
 	for _, status := range []string{"discovered", "failed"} {
+		// Single-field query (no composite index needed), filter age in Go
 		iter := fs.Collection("matches").
 			Where("status", "==", status).
-			Where("matchDate", "<", cutoff).
 			Documents(ctx)
 
 		deleted := 0
@@ -932,6 +932,13 @@ func cleanupExpiredMatches(ctx context.Context, fs *firestore.Client) {
 				break
 			}
 			data := doc.Data()
+			md, _ := data["matchDate"].(string)
+			if md == "" {
+				continue
+			}
+			if md >= cutoff {
+				continue // not expired
+			}
 			ownerID, _ := data["ownerId"].(string)
 			sharecode, _ := data["sharecode"].(string)
 			if ownerID != "" && sharecode != "" {
