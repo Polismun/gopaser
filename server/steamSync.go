@@ -16,8 +16,9 @@ import (
 
 	"sync"
 
-	"cloud.google.com/go/firestore"
 	"cs2-parser-server/stats"
+
+	"cloud.google.com/go/firestore"
 )
 
 const (
@@ -230,8 +231,8 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 	updates := map[string]interface{}{
 		"lastSyncAt":            nowISO(),
 		"lastSyncImportedCount": imported,
-		"failedSharecodes":     newFailed,
-		"failedRetries":        newRetries,
+		"failedSharecodes":      newFailed,
+		"failedRetries":         newRetries,
 	}
 	if cursor != sl.LatestSharecode {
 		updates["latestSharecode"] = cursor
@@ -390,12 +391,12 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 			ID:              matchDocID,
 			ParticipantUids: []string{uid},
 			Status:          "discovered",
-			Source:     "steam",
-			MatchDate:  matchDate,
-			Sharecode:  code,
-			GCMatchID:  gcResult.MatchID,
-			DemoURL:    gcResult.URL,
-			Map:        gcResult.Map,
+			Source:          "steam",
+			MatchDate:       matchDate,
+			Sharecode:       code,
+			GCMatchID:       gcResult.MatchID,
+			DemoURL:         gcResult.URL,
+			Map:             gcResult.Map,
 			TeamScores: func() [2]int {
 				if len(gcResult.TeamScores) >= 2 {
 					return [2]int{gcResult.TeamScores[0], gcResult.TeamScores[1]}
@@ -538,22 +539,22 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 
 	// DemoDoc
 	demoData := map[string]interface{}{
-		"id":              parsed.ID,
-		"vpsFileId":       parsed.ID,
-		"ownerId":         uid,
-		"demoHash":        dl.sha256Hex,
-		"source":          "steam-auto",
-		"steamSharecode":  code,
-		"visibility":      "private",
-		"createdAt":       createdAt,
-		"mapName":         parseResult.MapName,
-		"teamCT":          teamCT,
-		"teamT":           teamT,
-		"scoreCT":         scoreCT,
-		"scoreT":          scoreT,
-		"tickRate":        parseResult.TickRate,
-		"totalRounds":     allStats.TotalRounds,
-		"fileSizeBytes":   parsed.SizeBytes,
+		"id":             parsed.ID,
+		"vpsFileId":      parsed.ID,
+		"ownerId":        uid,
+		"demoHash":       dl.sha256Hex,
+		"source":         "steam-auto",
+		"steamSharecode": code,
+		"visibility":     "private",
+		"createdAt":      createdAt,
+		"mapName":        parseResult.MapName,
+		"teamCT":         teamCT,
+		"teamT":          teamT,
+		"scoreCT":        scoreCT,
+		"scoreT":         scoreT,
+		"tickRate":       parseResult.TickRate,
+		"totalRounds":    allStats.TotalRounds,
+		"fileSizeBytes":  parsed.SizeBytes,
 	}
 	if dl.recordedAt != "" {
 		demoData["recordedAt"] = dl.recordedAt
@@ -852,11 +853,10 @@ func handleBackfillDemoUrls(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := context.Background()
 
-	// Query matches with sharecode but no demoUrl, less than 31 days old
-	cutoff := time.Now().AddDate(0, 0, -31).Format(time.RFC3339)
+	// Query all steam matches, filter in Go (avoids composite index requirement)
+	cutoff := time.Now().AddDate(0, 0, -31)
 	iter := fs.Collection("matches").
 		Where("source", "==", "steam").
-		Where("matchDate", ">", cutoff).
 		Documents(ctx)
 
 	type backfillResult struct {
@@ -871,12 +871,21 @@ func handleBackfillDemoUrls(w http.ResponseWriter, r *http.Request) {
 	for {
 		doc, err := iter.Next()
 		if err != nil {
+			if err.Error() != "no more items in iterator" {
+				log.Printf("[backfill] iterator error: %v", err)
+			}
 			break
 		}
 		data := doc.Data()
 		// Skip if already has demoUrl
 		if url, ok := data["demoUrl"].(string); ok && url != "" {
 			continue
+		}
+		// Skip matches older than 31 days (URL would be expired)
+		if md, ok := data["matchDate"].(string); ok {
+			if t, err := time.Parse(time.RFC3339, md); err == nil && t.Before(cutoff) {
+				continue
+			}
 		}
 		// Need sharecode to call GC
 		code, ok := data["sharecode"].(string)
@@ -929,27 +938,27 @@ func handleBackfillDemoUrls(w http.ResponseWriter, r *http.Request) {
 // ── GC bot internal call ──
 
 type gcBotResult struct {
-	URL        string         `json:"url"`
-	Matchtime  int            `json:"matchtime"`
-	MatchID    string         `json:"matchId"`
-	Map        string         `json:"map"`
-	Duration   int            `json:"duration"`
-	TeamScores [2]int         `json:"teamScores"`
-	Players    []gcBotPlayer  `json:"players"`
+	URL        string        `json:"url"`
+	Matchtime  int           `json:"matchtime"`
+	MatchID    string        `json:"matchId"`
+	Map        string        `json:"map"`
+	Duration   int           `json:"duration"`
+	TeamScores [2]int        `json:"teamScores"`
+	Players    []gcBotPlayer `json:"players"`
 }
 
 type gcBotPlayer struct {
-	AccountID  int64  `json:"accountId"`
-	Kills      int    `json:"kills"`
-	Deaths     int    `json:"deaths"`
-	Assists    int    `json:"assists"`
-	Score      int    `json:"score"`
-	MVPs       int    `json:"mvps"`
-	Headshots  int    `json:"headshots"`
-	RankID     int    `json:"rankId"`
-	RankChange int    `json:"rankChange"`
-	RankType   int    `json:"rankType"`
-	Wins       int    `json:"wins"`
+	AccountID  int64 `json:"accountId"`
+	Kills      int   `json:"kills"`
+	Deaths     int   `json:"deaths"`
+	Assists    int   `json:"assists"`
+	Score      int   `json:"score"`
+	MVPs       int   `json:"mvps"`
+	Headshots  int   `json:"headshots"`
+	RankID     int   `json:"rankId"`
+	RankChange int   `json:"rankChange"`
+	RankType   int   `json:"rankType"`
+	Wins       int   `json:"wins"`
 }
 
 func callGCBotInternal(matchID, reservationID uint64, tvPort uint16) (*gcBotResult, error) {
