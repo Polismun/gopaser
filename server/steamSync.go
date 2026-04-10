@@ -826,9 +826,10 @@ func handleBackfillDemoUrls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Admin auth
-	authHeader := r.Header.Get("Authorization")
-	if verifyURL != "" {
+	// Admin auth — localhost bypass (SSH access = already admin)
+	isLocal := strings.HasPrefix(r.RemoteAddr, "127.0.0.1:") || strings.HasPrefix(r.RemoteAddr, "[::1]:")
+	if !isLocal && verifyURL != "" {
+		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
