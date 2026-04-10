@@ -16,9 +16,8 @@ import (
 
 	"sync"
 
-	"cs2-parser-server/stats"
-
 	"cloud.google.com/go/firestore"
+	"cs2-parser-server/stats"
 )
 
 const (
@@ -206,6 +205,12 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 			if retryableCodes[errCode] && attempts < maxRetriesPerSharecode && len(newFailed) < maxFailedSharecodes {
 				newFailed = append(newFailed, code)
 				newRetries[code] = attempts
+			} else if errCode == "DOWNLOAD_CORRUPT" && len(newFailed) < maxFailedSharecodes {
+				// DOWNLOAD_CORRUPT: never mark as permanently failed — keep retrying
+				// until the match expires (31 days). Valve CDN glitches are often transient.
+				newFailed = append(newFailed, code)
+				newRetries[code] = 0 // reset counter
+				log.Printf("[steam-sync] sharecode %s DOWNLOAD_CORRUPT after %d attempts, resetting counter (will retry)", code, attempts)
 			} else {
 				// Max retries exceeded or non-retryable: mark MatchDoc as failed
 				if ex, _, st, mid := matchExistsBySharecode(ctx, fs, uid, code); ex && (st == "pending" || st == "discovered") {
@@ -231,8 +236,8 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 	updates := map[string]interface{}{
 		"lastSyncAt":            nowISO(),
 		"lastSyncImportedCount": imported,
-		"failedSharecodes":      newFailed,
-		"failedRetries":         newRetries,
+		"failedSharecodes":     newFailed,
+		"failedRetries":        newRetries,
 	}
 	if cursor != sl.LatestSharecode {
 		updates["latestSharecode"] = cursor
@@ -391,12 +396,12 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 			ID:              matchDocID,
 			ParticipantUids: []string{uid},
 			Status:          "discovered",
-			Source:          "steam",
-			MatchDate:       matchDate,
-			Sharecode:       code,
-			GCMatchID:       gcResult.MatchID,
-			DemoURL:         gcResult.URL,
-			Map:             gcResult.Map,
+			Source:     "steam",
+			MatchDate:  matchDate,
+			Sharecode:  code,
+			GCMatchID:  gcResult.MatchID,
+			DemoURL:    gcResult.URL,
+			Map:        gcResult.Map,
 			TeamScores: func() [2]int {
 				if len(gcResult.TeamScores) >= 2 {
 					return [2]int{gcResult.TeamScores[0], gcResult.TeamScores[1]}
@@ -539,22 +544,22 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 
 	// DemoDoc
 	demoData := map[string]interface{}{
-		"id":             parsed.ID,
-		"vpsFileId":      parsed.ID,
-		"ownerId":        uid,
-		"demoHash":       dl.sha256Hex,
-		"source":         "steam-auto",
-		"steamSharecode": code,
-		"visibility":     "private",
-		"createdAt":      createdAt,
-		"mapName":        parseResult.MapName,
-		"teamCT":         teamCT,
-		"teamT":          teamT,
-		"scoreCT":        scoreCT,
-		"scoreT":         scoreT,
-		"tickRate":       parseResult.TickRate,
-		"totalRounds":    allStats.TotalRounds,
-		"fileSizeBytes":  parsed.SizeBytes,
+		"id":              parsed.ID,
+		"vpsFileId":       parsed.ID,
+		"ownerId":         uid,
+		"demoHash":        dl.sha256Hex,
+		"source":          "steam-auto",
+		"steamSharecode":  code,
+		"visibility":      "private",
+		"createdAt":       createdAt,
+		"mapName":         parseResult.MapName,
+		"teamCT":          teamCT,
+		"teamT":           teamT,
+		"scoreCT":         scoreCT,
+		"scoreT":          scoreT,
+		"tickRate":        parseResult.TickRate,
+		"totalRounds":     allStats.TotalRounds,
+		"fileSizeBytes":   parsed.SizeBytes,
 	}
 	if dl.recordedAt != "" {
 		demoData["recordedAt"] = dl.recordedAt
@@ -935,30 +940,175 @@ func handleBackfillDemoUrls(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── Admin: retry failed matches ──
+
+func handleRetryFailedMatches(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Localhost bypass
+	isLocal := strings.HasPrefix(r.RemoteAddr, "127.0.0.1:") || strings.HasPrefix(r.RemoteAddr, "[::1]:")
+	if !isLocal && verifyURL != "" {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		status, err := verifyAuthAt(authHeader, "/api/verify-admin")
+		if status != http.StatusOK {
+			msg := "Forbidden"
+			if err != nil {
+				msg = err.Error()
+			}
+			http.Error(w, msg, status)
+			return
+		}
+	}
+
+	fs := getFirestoreClient()
+	if fs == nil {
+		http.Error(w, "Firestore unavailable", http.StatusInternalServerError)
+		return
+	}
+	ctx := context.Background()
+
+	cutoff := time.Now().Add(-31 * 24 * time.Hour)
+	iter := fs.Collection("matches").
+		Where("status", "==", "failed").
+		Documents(ctx)
+
+	type retryResult struct {
+		ID        string `json:"id"`
+		Sharecode string `json:"sharecode"`
+		Error     string `json:"error,omitempty"`
+	}
+	var results []retryResult
+	reset := 0
+
+	// Collect sharecodes to re-inject per user
+	reinject := make(map[string][]string) // uid → sharecodes
+
+	for {
+		doc, err := iter.Next()
+		if err != nil {
+			if err.Error() != "no more items in iterator" {
+				log.Printf("[retry-failed] iterator error: %v", err)
+			}
+			break
+		}
+		data := doc.Data()
+
+		// Skip matches older than 31 days
+		if md, ok := data["matchDate"].(string); ok {
+			if t, err := time.Parse(time.RFC3339, md); err == nil && t.Before(cutoff) {
+				continue
+			}
+		}
+
+		sharecode, _ := data["sharecode"].(string)
+		if sharecode == "" {
+			continue
+		}
+
+		docID := doc.Ref.ID
+
+		// Reset status to discovered, clear failReason
+		_, err = fs.Collection("matches").Doc(docID).Update(ctx, []firestore.Update{
+			{Path: "status", Value: "discovered"},
+			{Path: "failReason", Value: firestore.Delete},
+		})
+		if err != nil {
+			results = append(results, retryResult{ID: docID, Sharecode: sharecode, Error: err.Error()})
+			continue
+		}
+
+		// Collect UIDs to re-inject sharecode
+		if uids, ok := data["participantUids"].([]interface{}); ok {
+			for _, u := range uids {
+				if uid := fmt.Sprintf("%v", u); uid != "" {
+					reinject[uid] = append(reinject[uid], sharecode)
+				}
+			}
+		} else if ownerID, ok := data["ownerId"].(string); ok && ownerID != "" {
+			reinject[ownerID] = append(reinject[ownerID], sharecode)
+		}
+
+		results = append(results, retryResult{ID: docID, Sharecode: sharecode})
+		reset++
+	}
+	iter.Stop()
+
+	// Re-inject sharecodes into each user's failedSharecodes
+	for uid, codes := range reinject {
+		sl, err := readSteamLink(ctx, fs, uid)
+		if err != nil {
+			log.Printf("[retry-failed] can't read steamLink for %s: %v", uid, err)
+			continue
+		}
+		existing := make(map[string]bool, len(sl.FailedSharecodes))
+		for _, c := range sl.FailedSharecodes {
+			existing[c] = true
+		}
+		merged := sl.FailedSharecodes
+		for _, c := range codes {
+			if !existing[c] {
+				merged = append(merged, c)
+			}
+		}
+		retries := sl.FailedRetries
+		if retries == nil {
+			retries = make(map[string]int)
+		}
+		for _, c := range codes {
+			retries[c] = 0 // reset retry counter
+		}
+		if err := updateSteamLink(ctx, fs, uid, map[string]interface{}{
+			"failedSharecodes": merged,
+			"failedRetries":    retries,
+		}); err != nil {
+			log.Printf("[retry-failed] failed to update steamLink for %s: %v", uid, err)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"reset":   reset,
+		"total":   len(results),
+		"results": results,
+	})
+}
+
 // ── GC bot internal call ──
 
 type gcBotResult struct {
-	URL        string        `json:"url"`
-	Matchtime  int           `json:"matchtime"`
-	MatchID    string        `json:"matchId"`
-	Map        string        `json:"map"`
-	Duration   int           `json:"duration"`
-	TeamScores [2]int        `json:"teamScores"`
-	Players    []gcBotPlayer `json:"players"`
+	URL        string         `json:"url"`
+	Matchtime  int            `json:"matchtime"`
+	MatchID    string         `json:"matchId"`
+	Map        string         `json:"map"`
+	Duration   int            `json:"duration"`
+	TeamScores [2]int         `json:"teamScores"`
+	Players    []gcBotPlayer  `json:"players"`
 }
 
 type gcBotPlayer struct {
-	AccountID  int64 `json:"accountId"`
-	Kills      int   `json:"kills"`
-	Deaths     int   `json:"deaths"`
-	Assists    int   `json:"assists"`
-	Score      int   `json:"score"`
-	MVPs       int   `json:"mvps"`
-	Headshots  int   `json:"headshots"`
-	RankID     int   `json:"rankId"`
-	RankChange int   `json:"rankChange"`
-	RankType   int   `json:"rankType"`
-	Wins       int   `json:"wins"`
+	AccountID  int64  `json:"accountId"`
+	Kills      int    `json:"kills"`
+	Deaths     int    `json:"deaths"`
+	Assists    int    `json:"assists"`
+	Score      int    `json:"score"`
+	MVPs       int    `json:"mvps"`
+	Headshots  int    `json:"headshots"`
+	RankID     int    `json:"rankId"`
+	RankChange int    `json:"rankChange"`
+	RankType   int    `json:"rankType"`
+	Wins       int    `json:"wins"`
 }
 
 func callGCBotInternal(matchID, reservationID uint64, tvPort uint16) (*gcBotResult, error) {
