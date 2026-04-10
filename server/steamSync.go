@@ -228,7 +228,7 @@ func runSync(ctx context.Context, fs *firestore.Client, uid, idToken string) syn
 	defer saveCancel()
 
 	updates := map[string]interface{}{
-		"lastSyncAt":           nowISO(),
+		"lastSyncAt":            nowISO(),
 		"lastSyncImportedCount": imported,
 		"failedSharecodes":     newFailed,
 		"failedRetries":        newRetries,
@@ -394,6 +394,7 @@ func processSharecode(ctx context.Context, fs *firestore.Client, uid, idToken, c
 			MatchDate:  matchDate,
 			Sharecode:  code,
 			GCMatchID:  gcResult.MatchID,
+			DemoURL:    gcResult.URL,
 			Map:        gcResult.Map,
 			TeamScores: func() [2]int {
 				if len(gcResult.TeamScores) >= 2 {
@@ -810,6 +811,118 @@ func handleDedupHitGo(ctx context.Context, fs *firestore.Client, uid, code, hash
 	}
 
 	return nil
+}
+
+// ── Admin: backfill demoUrl for existing matches ──
+
+func handleBackfillDemoUrls(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Admin auth
+	authHeader := r.Header.Get("Authorization")
+	if verifyURL != "" {
+		if authHeader == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		status, err := verifyAuthAt(authHeader, "/api/verify-admin")
+		if status != http.StatusOK {
+			msg := "Forbidden"
+			if err != nil {
+				msg = err.Error()
+			}
+			http.Error(w, msg, status)
+			return
+		}
+	}
+
+	fs := getFirestoreClient()
+	if fs == nil {
+		http.Error(w, "Firestore unavailable", http.StatusInternalServerError)
+		return
+	}
+	ctx := context.Background()
+
+	// Query matches with sharecode but no demoUrl, less than 31 days old
+	cutoff := time.Now().AddDate(0, 0, -31).Format(time.RFC3339)
+	iter := fs.Collection("matches").
+		Where("source", "==", "steam").
+		Where("matchDate", ">", cutoff).
+		Documents(ctx)
+
+	type backfillResult struct {
+		ID      string `json:"id"`
+		URL     string `json:"url,omitempty"`
+		Error   string `json:"error,omitempty"`
+		Skipped bool   `json:"skipped,omitempty"`
+	}
+	var results []backfillResult
+	filled := 0
+
+	for {
+		doc, err := iter.Next()
+		if err != nil {
+			break
+		}
+		data := doc.Data()
+		// Skip if already has demoUrl
+		if url, ok := data["demoUrl"].(string); ok && url != "" {
+			continue
+		}
+		// Need sharecode to call GC
+		code, ok := data["sharecode"].(string)
+		if !ok || code == "" {
+			continue
+		}
+
+		docID := doc.Ref.ID
+
+		decoded, err := decodeSharecode(code)
+		if err != nil {
+			results = append(results, backfillResult{ID: docID, Error: fmt.Sprintf("decode: %v", err)})
+			continue
+		}
+
+		gcResult, err := callGCBotInternal(decoded.MatchID, decoded.ReservationID, decoded.TVPort)
+		if err != nil {
+			results = append(results, backfillResult{ID: docID, Error: fmt.Sprintf("gc: %v", err)})
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		if gcResult.URL == "" {
+			results = append(results, backfillResult{ID: docID, Error: "no URL from GC"})
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		// Update Firestore
+		_, err = fs.Collection("matches").Doc(docID).Update(ctx, []firestore.Update{
+			{Path: "demoUrl", Value: gcResult.URL},
+		})
+		if err != nil {
+			results = append(results, backfillResult{ID: docID, Error: fmt.Sprintf("update: %v", err)})
+		} else {
+			results = append(results, backfillResult{ID: docID, URL: gcResult.URL})
+			filled++
+		}
+
+		time.Sleep(3 * time.Second)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"filled":  filled,
+		"total":   len(results),
+		"results": results,
+	})
 }
 
 // ── GC bot internal call ──

@@ -46,6 +46,7 @@ type MatchDoc struct {
 	TeamCT      string        `firestore:"teamCT,omitempty" json:"teamCT,omitempty"`
 	TeamT       string        `firestore:"teamT,omitempty" json:"teamT,omitempty"`
 	ServerName  string        `firestore:"serverName,omitempty" json:"serverName,omitempty"`
+	DemoURL     string        `firestore:"demoUrl,omitempty" json:"demoUrl,omitempty"`
 	FailReason  string        `firestore:"failReason,omitempty" json:"failReason,omitempty"`
 	CreatedAt   string        `firestore:"createdAt" json:"createdAt"`
 }

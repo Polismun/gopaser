@@ -114,6 +114,7 @@ func main() {
 	http.HandleFunc("/steam/fetch-parse", handleSteamFetchParse)
 	http.HandleFunc("/steam/sync", handleSteamSync)
 	http.HandleFunc("/steam/propagate-new-user", handlePropagateNewUser)
+	http.HandleFunc("/steam/backfill-demo-urls", handleBackfillDemoUrls)
 	http.HandleFunc("/gc/demo-url", handleGCProxy)
 	http.HandleFunc("/demo/save", handleDemoSave)
 	http.HandleFunc("/demo/", handleDemoRoute)
